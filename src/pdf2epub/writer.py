@@ -200,9 +200,12 @@ def _contents_page(book: Book, entries: list[tuple[epub.Link, list[epub.Link]]])
     return page
 
 
-def _add_accessibility_metadata(eb: epub.EpubBook, has_images: bool) -> None:
+def accessibility_metadata(has_images: bool, ocr: bool = True) -> list[tuple[str, str]]:
     """schema.org accessibility metadata (EPUB Accessibility 1.1), as reading systems and stores expect."""
-    meta = [
+    summary = "Reflowable text with a navigable table of contents and headings; reading order follows the original book."
+    if ocr:
+        summary += " Text of scanned pages was produced by OCR and may contain recognition errors."
+    return [
         ("schema:accessMode", "textual"),
         *([("schema:accessMode", "visual")] if has_images else []),
         ("schema:accessModeSufficient", "textual"),
@@ -210,13 +213,12 @@ def _add_accessibility_metadata(eb: epub.EpubBook, has_images: bool) -> None:
         ("schema:accessibilityFeature", "readingOrder"),
         ("schema:accessibilityFeature", "structuralNavigation"),
         ("schema:accessibilityHazard", "none"),
-        (
-            "schema:accessibilitySummary",
-            "Reflowable text with a navigable table of contents and headings; reading order follows the "
-            "original book. Text of scanned pages was produced by OCR and may contain recognition errors.",
-        ),
+        ("schema:accessibilitySummary", summary),
     ]
-    for prop, value in meta:
+
+
+def _add_accessibility_metadata(eb: epub.EpubBook, has_images: bool) -> None:
+    for prop, value in accessibility_metadata(has_images):
         eb.add_metadata(None, "meta", value, {"property": prop})
 
 

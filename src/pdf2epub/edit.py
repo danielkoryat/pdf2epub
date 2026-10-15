@@ -45,7 +45,7 @@ def chapter_summaries(book: Book) -> list[dict]:
     return out
 
 
-def chapter_preview(book: Book, index: int, limit: int = 60) -> list[dict]:
+def chapter_preview(book: Book, index: int, limit: int = 5000) -> list[dict]:
     ch = book.chapters[index]
     items = []
     for n, b in enumerate(ch.blocks[:limit]):
@@ -64,6 +64,8 @@ class ChapterEdit:
     in_toc: bool | None = None
     merge: bool = False  # append this chapter to the previous one (its heading becomes an inline sub-heading)
     drop: bool = False  # remove the chapter entirely
+    # start new chapters inside this one: [{"at": block index, "title": "..."}]
+    splits: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -119,6 +121,7 @@ def apply_edits(book: Book, edits: Edits) -> Book:
         e = by_index.get(i, ChapterEdit(index=i))
         if e.drop:
             continue
+        ch, *pieces = _split(ch, e.splits)
         if e.title is not None and e.title.strip() and e.title.strip() != (ch.title or ""):
             _retitle(ch, e.title.strip())
         if e.in_toc is not None:
@@ -130,7 +133,40 @@ def apply_edits(book: Book, edits: Edits) -> Book:
                     b.level = max(b.level, 2)  # rendered as an inline sub-heading, not a chapter title
             previous.blocks.extend(ch.blocks)
             previous.notes.extend(ch.notes)
-            continue
-        kept.append(ch)
+        else:
+            kept.append(ch)
+        kept.extend(pieces)
     book.chapters = kept
     return book
+
+
+def _split(ch: Chapter, splits: list[dict]) -> list[Chapter]:
+    """Cut a chapter at the given block indexes; each new piece starts with a heading carrying its title.
+
+    Footnotes go with the piece whose text refers to them.
+    """
+    points = sorted({int(s["at"]): (s.get("title") or "").strip() for s in splits if 0 < int(s.get("at", 0)) < len(ch.blocks)}.items())
+    if not points:
+        return [ch]
+    pieces: list[Chapter] = []
+    bounds = [0] + [at for at, _t in points] + [len(ch.blocks)]
+    titles = [None] + [t for _at, t in points]
+    for n, (start, end) in enumerate(zip(bounds, bounds[1:])):
+        blocks = ch.blocks[start:end]
+        if n == 0:
+            piece = Chapter(title=ch.title, blocks=blocks, in_toc=ch.in_toc, level=ch.level)
+        else:
+            title = titles[n]
+            first = blocks[0]
+            if title:
+                if first.kind is Kind.HEADING:
+                    first.text, first.level, first.marker = title, 1, ""
+                else:
+                    blocks.insert(0, Block(Kind.HEADING, text=title, page=first.page, level=1, first_on_page=True))
+            piece = Chapter(title=title or None, blocks=blocks, in_toc=bool(title), level=ch.level)
+        refs = " ".join(b.text for b in piece.blocks)
+        piece.notes = [note for note in ch.notes if note.note_id and f"{NOTE_OPEN}{note.note_id}{NOTE_CLOSE}" in refs]
+        pieces.append(piece)
+    claimed = {id(n) for p in pieces for n in p.notes}
+    pieces[0].notes += [n for n in ch.notes if id(n) not in claimed]  # unreferenced notes stay with the first piece
+    return pieces

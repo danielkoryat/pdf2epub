@@ -21,10 +21,10 @@
     <section id="home">
       <form id="upload" class="card">
         <label id="drop" class="drop" for="file">
-          <input id="file" name="file" type="file" accept="application/pdf,.pdf" hidden>
+          <input id="file" name="file" type="file" accept="application/pdf,.pdf,application/epub+zip,.epub" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></svg>
-          <strong id="drop-title">Drop a PDF here or click to choose</strong>
-          <span id="drop-sub" class="muted">Born-digital or scanned · Hebrew, English and other languages</span>
+          <strong id="drop-title">Drop a PDF or EPUB here, or click to choose</strong>
+          <span id="drop-sub" class="muted">PDFs are converted (born-digital or scanned) · EPUBs are enriched</span>
         </label>
 
         <details class="options">
@@ -62,9 +62,10 @@
         </div>
       </form>
 
-      <h2 class="section-title">Conversions</h2>
+      <h2 class="section-title">Library</h2>
+      <input id="search" class="search" type="search" placeholder="Search by title, author or file name" dir="auto">
       <div id="jobs" class="jobs"></div>
-      <p id="no-jobs" class="muted empty hidden">Nothing converted yet.</p>
+      <p id="no-jobs" class="muted empty hidden">Nothing here yet.</p>
     </section>
 
     <!-- Review a prepared book -->
@@ -89,11 +90,16 @@
       <div class="card">
         <div class="table-head">
           <h3>Chapters</h3>
-          <p class="muted">Untick <em>Contents</em> for false chapters, or merge them into the chapter before. Titles can be edited.</p>
+          <p class="muted">Rename chapters, untick <em>Contents</em> for false ones, tick several and <em>Merge</em> them into one,
+            or open <em>Preview</em> to start a new chapter at any paragraph.</p>
+        </div>
+        <div class="toolbar">
+          <button id="merge-selected" type="button" disabled>Merge selected</button>
+          <span id="selection-note" class="muted"></span>
         </div>
         <div class="table-wrap">
           <table id="chapters">
-            <thead><tr><th>Contents</th><th>Title</th><th>Pages</th><th>Words</th><th>Merge</th><th>Remove</th><th></th></tr></thead>
+            <thead><tr><th class="c"><input type="checkbox" id="select-all" aria-label="Select all"></th><th>Contents</th><th>Title</th><th>Pages</th><th>Words</th><th>Remove</th><th></th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
@@ -102,6 +108,44 @@
       <div class="sticky-actions">
         <span id="build-note" class="muted"></span>
         <button id="build" class="primary" type="button">Build EPUB</button>
+      </div>
+    </section>
+    <!-- Review an EPUB before enriching it -->
+    <section id="review-epub" class="hidden">
+      <div class="review-head">
+        <button class="ghost" id="back-epub" type="button">← Back</button>
+        <h2 id="e-head" dir="auto">Enrich EPUB</h2>
+      </div>
+
+      <div class="card meta">
+        <div class="cover-box">
+          <img id="e-cover" alt="Cover" class="cover hidden">
+          <div id="e-nocover" class="nocover muted">No cover</div>
+          <label class="file-button">Choose a new cover
+            <input type="file" id="e-cover-file" accept="image/jpeg,image/png" hidden>
+          </label>
+          <button class="ghost small hidden" id="e-cover-undo" type="button">Keep the original cover</button>
+        </div>
+        <div class="grid">
+          <label>Title <input id="e-title" dir="auto"></label>
+          <label>Author <input id="e-authors" dir="auto" placeholder="Comma-separated"></label>
+          <label>Language <input id="e-language" placeholder="he, en, fr…"></label>
+          <p id="e-summary" class="muted span2"></p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="table-head">
+          <h3>Improvements</h3>
+          <p class="muted">Suggestions for this book are ticked. The book's own text and styling are kept as they are.</p>
+        </div>
+        <div id="e-options" class="option-list"></div>
+        <ul id="e-validation" class="warnings"></ul>
+      </div>
+
+      <div class="sticky-actions">
+        <span id="e-note" class="muted"></span>
+        <button id="e-build" class="primary" type="button">Enrich EPUB</button>
       </div>
     </section>
   </main>

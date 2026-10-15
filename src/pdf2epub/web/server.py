@@ -1,4 +1,7 @@
-"""Local web UI: `pdf2epub-web` serves http://127.0.0.1:5050 by default."""
+"""Local web UI: `pdf2epub-web` serves http://127.0.0.1:5050 by default.
+
+Converts PDFs to EPUB and enriches existing EPUB files; the history is kept in data/pdf2epub.db.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +13,7 @@ import socket
 import sys
 import threading
 import webbrowser
+import zipfile
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -28,11 +32,29 @@ DEFAULT_PORT = 5050  # 5000 is often taken (macOS AirPlay receiver, Docker Deskt
 # pdf2epub can run next to other local projects.
 RESERVED_PORTS = set(range(3000, 3005)) | set(range(8000, 8021))
 MAX_UPLOAD = 2 * 1024**3
+MAX_COVER = 20 * 1024**2
+
+
+def _kind_of(first_chunk: bytes, name: str) -> str | None:
+    """'pdf' or 'epub' from the file's first bytes (an EPUB is a ZIP file)."""
+    if first_chunk.startswith(b"%PDF"):
+        return "pdf"
+    if first_chunk.startswith(b"PK\x03\x04") and (b"application/epub+zip" in first_chunk[:200] or name.lower().endswith(".epub")):
+        return "epub"
+    return None
+
+
+def _is_epub(path: Path) -> bool:
+    try:
+        with zipfile.ZipFile(path) as z:
+            return "META-INF/container.xml" in z.namelist()
+    except zipfile.BadZipFile:
+        return False
 
 
 def create_app(data_dir: Path) -> FastAPI:
     app = FastAPI(title="pdf2epub", docs_url=None, redoc_url=None)
-    store = JobStore(data_dir / "jobs")
+    store = JobStore(data_dir)
     app.state.store = store
 
     def job_or_404(job_id: str) -> Job:
@@ -74,26 +96,30 @@ def create_app(data_dir: Path) -> FastAPI:
             raise HTTPException(400, "ocr must be auto, always or never")
         if ocr_lang and not re.fullmatch(r"[a-z_]{3,8}(\+[a-z_]{3,8})*", ocr_lang):
             raise HTTPException(400, "OCR language must look like heb, eng or heb+eng")
+        first = await file.read(1024 * 1024)
+        if not first:
+            raise HTTPException(400, "The file is empty")
+        kind = _kind_of(first, name)
+        if kind is None:
+            raise HTTPException(400, f"{name} is neither a PDF nor an EPUB file")
         options = {"title": title.strip(), "author": author.strip(), "language": language.strip(),
                    "ocr": ocr, "ocr_lang": ocr_lang.strip(), "cover": cover}
-        job = store.create(name, options, review)
-        target = store.dir(job.id) / "input.pdf"
+        job = store.create(name, options, review, kind)
+        target = store.input_path(job)
         size = 0
         with open(target, "wb") as fh:
-            while chunk := await file.read(1024 * 1024):
-                if size == 0 and not chunk.startswith(b"%PDF"):
-                    fh.close()
-                    store.discard(job)
-                    raise HTTPException(400, f"{name} is not a PDF file")
+            chunk = first
+            while chunk:
                 size += len(chunk)
                 if size > MAX_UPLOAD:
                     fh.close()
                     store.discard(job)
                     raise HTTPException(413, "File is larger than 2 GB")
                 fh.write(chunk)
-        if size == 0:
+                chunk = await file.read(1024 * 1024)
+        if kind == "epub" and not _is_epub(target):
             store.discard(job)
-            raise HTTPException(400, "The file is empty")
+            raise HTTPException(400, f"{name} is not a valid EPUB file")
         store.submit(job)
         return job.public()
 
@@ -109,16 +135,31 @@ def create_app(data_dir: Path) -> FastAPI:
             raise HTTPException(409, str(exc)) from exc
         return Response(status_code=204)
 
+    def prepared(job: Job) -> None:
+        if job.summary is None or (job.kind == "pdf" and not (store.dir(job.id) / "draft.pkl").is_file()):
+            raise HTTPException(409, "This job has not been prepared yet")
+
     def draft_of(job: Job):
-        if job.summary is None or not (store.dir(job.id) / "draft.pkl").is_file():
-            raise HTTPException(409, "This job has no prepared book yet")
+        if job.kind != "pdf":
+            raise HTTPException(409, "Only PDF conversions have chapters to review")
+        prepared(job)
         return store.draft(job)
 
     @app.get("/api/jobs/{job_id}/draft")
     def get_draft(job_id: str) -> dict:
         job = job_or_404(job_id)
+        if job.kind == "epub":
+            prepared(job)
+            return {
+                "kind": "epub",
+                "summary": job.summary,
+                "edits": job.edits,
+                "has_cover": store.epub_cover(job) is not None,
+                "new_cover": store.cover_upload_path(job).is_file(),
+            }
         book = draft_of(job).book
         return {
+            "kind": "pdf",
             "title": book.title,
             "authors": book.authors,
             "language": book.language,
@@ -149,17 +190,41 @@ def create_app(data_dir: Path) -> FastAPI:
 
     @app.get("/api/jobs/{job_id}/cover")
     def get_cover(job_id: str) -> Response:
-        book = draft_of(job_or_404(job_id)).book
-        if not book.cover:
+        job = job_or_404(job_id)
+        cover = store.epub_cover(job) if job.kind == "epub" else draft_of(job).book.cover
+        if not cover:
             raise HTTPException(404, "No cover")
-        return Response(book.cover, media_type="image/jpeg", headers={"Cache-Control": "max-age=3600"})
+        media = "image/png" if cover[:8] == b"\x89PNG\r\n\x1a\n" else "image/jpeg"
+        return Response(cover, media_type=media, headers={"Cache-Control": "no-cache"})
+
+    @app.post("/api/jobs/{job_id}/cover")
+    async def upload_cover(job_id: str, file: UploadFile = File(...)) -> dict:
+        """A new cover image for an EPUB that is being enriched."""
+        job = job_or_404(job_id)
+        if job.kind != "epub":
+            raise HTTPException(409, "Covers can be replaced for EPUB files only")
+        data = await file.read(MAX_COVER + 1)
+        if len(data) > MAX_COVER:
+            raise HTTPException(413, "The image is larger than 20 MB")
+        if not (data.startswith(b"\xff\xd8\xff") or data.startswith(b"\x89PNG\r\n\x1a\n")):
+            raise HTTPException(400, "The cover must be a JPEG or PNG image")
+        store.cover_upload_path(job).write_bytes(data)
+        return {"ok": True}
+
+    @app.delete("/api/jobs/{job_id}/cover")
+    def remove_cover_upload(job_id: str) -> Response:
+        store.cover_upload_path(job_or_404(job_id)).unlink(missing_ok=True)
+        return Response(status_code=204)
 
     @app.post("/api/jobs/{job_id}/build")
     def build_job(job_id: str, edits: dict) -> dict:
         job = job_or_404(job_id)
         if job.status in ("queued", "preparing", "building"):
             raise HTTPException(409, "The job is still running")
-        draft_of(job)
+        if job.kind == "pdf":
+            draft_of(job)
+        else:
+            prepared(job)
         store.request_build(job, edits)
         return job.public()
 

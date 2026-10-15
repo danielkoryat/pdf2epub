@@ -114,3 +114,67 @@ def test_upload_review_build_download(tmp_path: Path):
 
     assert client.delete(f"/api/jobs/{job['id']}").status_code == 204
     assert client.get("/api/jobs").json() == []
+
+
+def _wait(client, job_id: str, status: str, timeout: float = 120) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        current = client.get(f"/api/jobs/{job_id}").json()
+        assert current["status"] != "failed", current["error"]
+        if current["status"] == status:
+            return current
+        time.sleep(0.2)
+    raise AssertionError(f"job never reached {status}")
+
+
+def test_epub_enrichment_flow_and_history_in_database(tmp_path: Path):
+    from test_enrich import PNG, epub3_hebrew
+
+    from pdf2epub.enrich import EpubPackage
+
+    client = TestClient(create_app(tmp_path))
+    job = client.post("/api/jobs", files={"file": ("book.epub", epub3_hebrew(), "application/epub+zip")}).json()
+    assert job["kind"] == "epub"
+    _wait(client, job["id"], "review")
+    draft = client.get(f"/api/jobs/{job['id']}/draft").json()
+    assert draft["kind"] == "epub" and draft["summary"]["detected_language"] == "he" and not draft["has_cover"]
+
+    assert client.post(f"/api/jobs/{job['id']}/cover", files={"file": ("c.png", PNG, "image/png")}).status_code == 200
+    assert client.get(f"/api/jobs/{job['id']}/cover").content == PNG
+    edits = {"title": "ספר משופר", "authors": "כותב", "contents_page": False, "new_cover": True}
+    assert client.post(f"/api/jobs/{job['id']}/build", json=edits).status_code == 200
+    done = _wait(client, job["id"], "done")
+    assert any("contents page" in c for c in done["report"]["changes"]) is False
+    assert any("cover" in c for c in done["report"]["changes"])
+    epub = client.get(f"/api/jobs/{job['id']}/epub")
+    pkg = EpubPackage(epub.content)
+    assert pkg.dc("title")[0].text == "ספר משופר" and pkg.dc("language")[0].text == "he"
+
+    # The history lives in the database: a new server process sees the job and its report.
+    again = TestClient(create_app(tmp_path))
+    jobs = again.get("/api/jobs").json()
+    assert [j["id"] for j in jobs] == [job["id"]]
+    assert jobs[0]["title"] == "ספר משופר" and jobs[0]["report"]["changes"]
+    assert (tmp_path / "pdf2epub.db").is_file()
+
+
+def test_old_json_jobs_are_imported(tmp_path: Path):
+    import json
+
+    folder = tmp_path / "jobs" / "abc123"
+    folder.mkdir(parents=True)
+    (folder / "job.json").write_text(json.dumps({
+        "id": "abc123", "filename": "old.pdf", "created": 1.0, "options": {}, "review": True,
+        "status": "done", "title": "Old book", "log": [], "summary": None, "report": None, "edits": None,
+    }), encoding="utf-8")
+    client = TestClient(create_app(tmp_path))
+    jobs = client.get("/api/jobs").json()
+    assert [(j["id"], j["title"], j["kind"]) for j in jobs] == [("abc123", "Old book", "pdf")]
+
+
+def test_upload_rejects_other_files(tmp_path: Path):
+    client = TestClient(create_app(tmp_path))
+    res = client.post("/api/jobs", files={"file": ("x.epub", b"PK\x03\x04garbage", "application/epub+zip")})
+    assert res.status_code == 400
+    res = client.post("/api/jobs", files={"file": ("x.txt", b"hello world", "text/plain")})
+    assert res.status_code == 400

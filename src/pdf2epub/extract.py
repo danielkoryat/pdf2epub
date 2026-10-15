@@ -193,10 +193,20 @@ def _heading_level(item) -> int:
     return max(int(getattr(item, "level", 1) or 1), 1)
 
 
+def _folio(text: str, page: int, top: float, box) -> Block | None:
+    """A printed page number from a page header/footer, kept (and dropped later in clean-up) so printed
+    page numbers can be mapped to PDF pages -- see known.py."""
+    from .known import PAGE_NUMBER
+
+    if not PAGE_NUMBER.match(text.strip()):
+        return None
+    return Block(Kind.PARAGRAPH, text=text.strip(), page=page, top=top, box=box, marker="folio")
+
+
 def _mark_first_on_page(blocks: list[Block]) -> list[Block]:
     seen: set[int] = set()
     for b in blocks:
-        if b.kind is not Kind.FOOTNOTE and b.page not in seen:
+        if b.kind is not Kind.FOOTNOTE and b.marker != "folio" and b.page not in seen:
             b.first_on_page = True
             seen.add(b.page)
     return blocks
@@ -258,8 +268,14 @@ def docling_to_blocks(doc, pdf=None) -> list[Block]:
     blocks: list[Block] = []
     for item in items:
         kind = kinds.get(item.label)
-        if kind is None:
-            continue  # page headers/footers, table-of-contents pages
+        if kind is None:  # page headers/footers, table-of-contents pages: only page numbers are kept
+            lines = lines_by_item.get(id(item))
+            text = " ".join(l.text for l in lines) if lines else (getattr(item, "text", "") or "")
+            page, box, height = _item_box(item, doc)
+            folio = _folio(text, page, round(box[1] / height, 4) if height else 0.0, _fractions(doc, page, box))
+            if folio:
+                blocks.append(folio)
+            continue
         if kind in (Kind.IMAGE, Kind.TABLE):
             block = _visual_block(item, doc, kind)
             if block:
@@ -340,6 +356,10 @@ def ocr_to_blocks(doc, paragraphs: dict[int, list]) -> list[Block]:
             last_order = best_order
             label = best.label if best is not None else DocItemLabel.TEXT
             if label in furniture:
+                top = round(para.bbox[1] / height, 4) if height else 0.0
+                folio = _folio(para.text, page, top, _fractions(doc, page, para.bbox))
+                if folio:
+                    entries.append((page, (best_order, index), folio))
                 continue
             kind = kinds.get(label, Kind.PARAGRAPH)
             if kind in (Kind.IMAGE, Kind.TABLE):

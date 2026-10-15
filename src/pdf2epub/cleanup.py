@@ -8,7 +8,8 @@ from collections import Counter
 
 from .lang import base_direction
 from .model import NOTE_CLOSE, NOTE_OPEN, Block, Kind
-from .sections import find_numbered_chapters, promote_title_pages
+from .known import Declared, use_declared_chapters
+from .sections import find_labeled_chapters, find_numbered_chapters, promote_title_pages
 
 log = logging.getLogger(__name__)
 
@@ -17,19 +18,26 @@ _TERMINAL = tuple(".!?…:;\"”’'»״)]׃。！？")
 _PAGE_NUMBER = re.compile(r"^[\s\-\u2013\u2014]*(\d{1,4}|[ivxlcdm]{1,6})[\s\-\u2013\u2014]*$", re.IGNORECASE)
 _LATIN_HYPHEN_BREAK = re.compile(r"([a-zà-öø-ÿ])[-­] +([a-zà-öø-ÿ])")
 DECORATIVE_SCALE = 5.0
+RUNNING_HEAD_EDGE = 0.12  # top/bottom band of the page where running heads sit
+RUNNING_HEAD_SHARE = 0.03  # ...and they repeat on at least this share of the pages
 SCENE_BREAK = re.compile(r"^[\s*·•~#⁂◆◇❖✦⁎=_\-\u2013\u2014]{1,20}$")
 _FOOTNOTE_MARKER = re.compile(r"^\s*(\*{1,4}|[†‡§¶]{1,3}|\d{1,3}|[¹²³⁴⁵⁶⁷⁸⁹⁰]{1,3})[\s.)\]]*")
 
 
-def clean(blocks: list[Block], page_count: int) -> list[Block]:
+def clean(blocks: list[Block], page_count: int, outline: list[Declared] | None = None) -> list[Block]:
     blocks = [_normalise(b) for b in blocks]
     blocks = [b for b in blocks if b.kind in (Kind.IMAGE, Kind.TABLE) or _has_content(b)]
     blocks = _drop_decorative(blocks)
+    blocks = _drop_running_heads(blocks, page_count)
+    # Chapters the book declares (bookmarks, printed contents page) -- before page numbers are dropped,
+    # because they map printed page numbers to PDF pages.
+    blocks = use_declared_chapters(blocks, page_count, outline)
     blocks = _drop_page_numbers(blocks)
     blocks = _drop_repeated_lines(blocks, page_count)
     # While every block still belongs to one page: find part title pages and numbered chapter breaks (they
     # rely on white space between blocks of a page), and link footnotes so a marker is only matched against
     # text printed on the same page as its note.
+    find_labeled_chapters(blocks)
     promote_title_pages(blocks)
     blocks = find_numbered_chapters(blocks)
     _link_footnotes(blocks)
@@ -72,8 +80,35 @@ def _drop_page_numbers(blocks: list[Block]) -> list[Block]:
     return [
         b
         for b in blocks
-        if not (b.kind is Kind.PARAGRAPH and _PAGE_NUMBER.match(b.text) and (b.top < 0.1 or b.top > 0.85))
+        if b.marker != "folio"
+        and not (b.kind is Kind.PARAGRAPH and _PAGE_NUMBER.match(b.text) and (b.top < 0.1 or b.top > 0.85))
     ]
+
+
+def _at_page_edge(block: Block) -> bool:
+    return block.top < RUNNING_HEAD_EDGE or block.top > 1 - RUNNING_HEAD_EDGE
+
+
+def _drop_running_heads(blocks: list[Block], page_count: int) -> list[Block]:
+    """Remove running heads: the book or author name (or the chapter title) printed at the top or bottom edge
+    of page after page. The layout model often calls them headings, so both headings and paragraphs count.
+    Only the copies at the page edge go: the same words further down a page (a real title) stay.
+    """
+    if page_count < 6:
+        return blocks
+    edge = [b for b in blocks if b.kind in (Kind.PARAGRAPH, Kind.HEADING) and len(b.text) < 60 and _at_page_edge(b)]
+    counts = Counter(_key(b.text) for b in edge)
+    threshold = max(4, int(RUNNING_HEAD_SHARE * page_count))
+    heads = {t for t, n in counts.items() if n >= threshold and any(ch.isalpha() for ch in t)}
+    if not heads:
+        return blocks
+    log.info("Dropping running heads: %s", sorted(heads)[:10])
+    drop = {id(b) for b in edge if _key(b.text) in heads}
+    return [b for b in blocks if id(b) not in drop]
+
+
+def _key(text: str) -> str:
+    return " ".join(re.sub(r"[^\w\s]", " ", text.lower()).split())
 
 
 def _drop_repeated_lines(blocks: list[Block], page_count: int) -> list[Block]:

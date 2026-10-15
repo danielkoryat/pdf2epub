@@ -260,7 +260,7 @@ def test_corrector_keeps_real_words_with_prefixes():
 
 
 def test_dash_styled_page_numbers_and_scene_breaks():
-    dash = "—"
+    dash = "\u2014"
     blocks = [
         para("Text.", 1, first=True),
         para(f"{dash} 14 {dash}", 1, top=0.95),  # page number printed between dashes: dropped
@@ -272,3 +272,21 @@ def test_dash_styled_page_numbers_and_scene_breaks():
     from pdf2epub.cleanup import SCENE_BREAK
 
     assert SCENE_BREAK.match(dash * 3) and not SCENE_BREAK.match("2014")
+
+
+def test_small_heading_after_full_page_is_not_a_chapter():
+    body = "Some long chapter text. " * 20
+
+    def boxed(block, top, bottom):
+        block.box = (0.1, top, 0.9, bottom)
+        return block
+
+    blocks = [
+        boxed(heading("Chapter One", 1, size=40), 0.1, 0.15),
+        boxed(para(body, 1, size=20), 0.2, 0.96),  # page 1 is full to the bottom
+        boxed(heading("GERALD THOMPSON", 2, size=27), 0.05, 0.08),  # a business card quoted at the top of page 2
+        boxed(para(body, 2, size=20), 0.1, 0.6),  # chapter ends mid-page
+        boxed(heading("Chapter Two", 3, size=27), 0.1, 0.15),  # same size, but the page before was not full
+        boxed(para(body, 3, size=20), 0.2, 0.9),
+    ]
+    assert [c.title for c in build_chapters(blocks) if c.in_toc] == ["Chapter One", "Chapter Two"]

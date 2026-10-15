@@ -22,6 +22,7 @@ from . import config
 from .analyze import classify_pages, page_is_cover_like, render_cover, strip_text_from_scanned
 from .cleanup import clean
 from .extract import ExtractSettings, extract
+from .known import outline_entries
 from .lang import direction_for_language, dominant_script, language_for_script, looks_visually_reversed
 from .model import Block, Book, Kind
 from .ocrlang import TESS_TO_BCP47, detect_ocr_language, ensure_tessdata
@@ -45,6 +46,7 @@ class Options:
     device: str = "auto"  # auto | cuda | cpu
     pages: tuple[int, int] | None = None  # 1-based inclusive page range to convert
     dump_blocks: Path | None = None
+    source_name: str | None = None  # original file name, when the PDF was saved under another name
 
 
 @dataclass
@@ -76,11 +78,11 @@ class Report:
     warnings: list[str]
 
 
-def _title_from_metadata(pdf: pymupdf.Document, pdf_path: Path) -> str:
+def _title_from_metadata(pdf: pymupdf.Document, pdf_path: Path, source_name: str | None = None) -> str:
     meta_title = (pdf.metadata or {}).get("title", "").strip()
     if meta_title and not re.search(r"\.(docx?|pdf|indd|tex)$|^microsoft|^untitled", meta_title, re.IGNORECASE):
         return meta_title
-    return re.sub(r"[_]+", " ", pdf_path.stem).strip()
+    return re.sub(r"[_]+", " ", Path(source_name).stem if source_name else pdf_path.stem).strip()
 
 
 def convert(pdf_path: Path, out_path: Path, opts: Options, progress: Progress | None = None) -> Report:
@@ -97,8 +99,10 @@ def _prepare(pdf_path: Path, opts: Options, progress: Progress, tmp: Path) -> Dr
     started = time.monotonic()
     warnings: list[str] = []
     with pymupdf.open(pdf_path) as original:
-        title = opts.title or _title_from_metadata(original, pdf_path)
+        title = opts.title or _title_from_metadata(original, pdf_path, opts.source_name)
         authors = opts.authors or [a for a in [(original.metadata or {}).get("author", "").strip()] if a]
+        first, last = opts.pages or (1, original.page_count)
+        outline = outline_entries(original.get_toc(simple=True), first, last - first + 1)
 
     if opts.pages:
         first, last = opts.pages
@@ -166,7 +170,7 @@ def _prepare(pdf_path: Path, opts: Options, progress: Progress, tmp: Path) -> Dr
         _dump(blocks, opts.dump_blocks)
 
     progress("structure", 0, 1)
-    blocks = clean(blocks, len(pages))
+    blocks = clean(blocks, len(pages), outline)
     language = opts.language or _detect_language(blocks, ocr_lang)
     chapters = build_chapters(blocks)
     progress("structure", 1, 1)

@@ -96,3 +96,33 @@ def test_contents_page_and_accessibility_metadata(tmp_path: Path):
     if epubcheck_available():
         result = check_epub(out)
         assert result is not None and result.ok, result.errors
+
+
+def _page(page, *blocks):
+    return [Block(Kind.HEADING if h else Kind.PARAGRAPH, text=t, page=page, top=top, size=s, first_on_page=(n == 0))
+            for n, (t, top, s, h) in enumerate(blocks)]
+
+
+def test_running_heads_dropped_but_real_title_kept():
+    blocks = _page(1, ("Foreword", 0.3, 20, True), (LONG, 0.4, 10, False))
+    for page in range(2, 11):
+        head = "Aldous Huxley" if page % 2 else "Brave New World"
+        blocks += _page(page, (head, 0.05, 13, True), (LONG, 0.2, 10, False))
+    out = clean(blocks, 10)
+    texts = [b.text for b in out]
+    assert "Aldous Huxley" not in texts and "Brave New World" not in texts
+    assert "Foreword" in texts
+
+
+def test_chapter_labels_renumbered_and_control_chapters():
+    labels = ["פרק א", "פרק ב", "פרק ג", "פרקר", "פרק ה", "פרק!", "פרק ז"]  # OCR garbled ד and ו
+    blocks = _page(1, ("הקדמה", 0.2, 20, True), (LONG, 0.3, 10, False))
+    for n, label in enumerate(labels):
+        page = 2 + 2 * n
+        blocks += _page(page, (label, 0.24, 20, True), (LONG, 0.35, 10, False))
+        blocks += _page(page + 1, (LONG, 0.1, 10, False))
+    # a quote set as a heading at the top of a page inside chapter ג: not a chapter
+    blocks += _page(30, ("ציטוט בתוך הטקסט", 0.1, 20, True), (LONG, 0.3, 10, False))
+    blocks.sort(key=lambda b: b.page if b.page != 30 else 6.5)
+    chapters = build_chapters(clean(blocks, 30))
+    assert [c.title for c in chapters if c.in_toc] == ["הקדמה"] + [f"פרק {x}" for x in "אבגדהוז"]

@@ -113,9 +113,44 @@ def promote_title_pages(blocks: list[Block]) -> None:
         return
     for texts in title_pages:
         first = texts[0]
+        if first.marker in ("known", "label"):
+            continue  # already a chapter start
         first.kind, first.level, first.first_on_page, first.marker = Kind.HEADING, 1, True, "part"
         for b in texts[1:]:
             b.kind = Kind.PARAGRAPH
+
+
+_LABEL = re.compile(
+    r"^\s*(?P<word>פרק|chapter|chapitre|kapitel|cap[ií]tulo|capitolo|глава|hoofdstuk|rozdzia[lł])\s*(?P<num>\S{0,6})\s*$",
+    re.IGNORECASE,
+)
+
+
+def find_labeled_chapters(blocks: list[Block]) -> None:
+    """Chapters labelled "פרק ג" / "Chapter 3" / "CHAPTER III": when a book uses such labels, they are its
+    chapter starts. OCR often garbles the number ("פרקר", "פרק!"), so labels are renumbered in sequence --
+    provided the readable ones agree with that sequence."""
+    found: list[tuple[Block, re.Match[str], tuple[int, str] | None]] = []
+    for b in blocks:
+        if b.kind not in (Kind.HEADING, Kind.PARAGRAPH) or len(b.text) > 16 or b.marker in ("folio", "known"):
+            continue
+        m = _LABEL.match(b.text)
+        if m:
+            found.append((b, m, parse_numeral(m.group("num")) if m.group("num") else None))
+    parsed = [(n, p) for n, (_b, _m, p) in enumerate(found) if p]
+    if len(found) < 3 or len(parsed) < 2:
+        return
+    offset = max(parsed[0][1][0] - parsed[0][0] - 1, 0)
+    agree = sum(1 for n, p in parsed if p[0] == n + 1 + offset)
+    if agree < 0.6 * len(parsed):
+        log.info("Chapter labels found but their numbers don't follow a sequence (%d of %d)", agree, len(parsed))
+        return
+    style = statistics.mode(p[1] for _n, p in parsed)
+    word = statistics.mode(m.group("word") for _b, m, _p in found)
+    for n, (b, _m, _p) in enumerate(found):
+        b.kind, b.level, b.marker, b.first_on_page = Kind.HEADING, 1, "label", True
+        b.text = f"{word} {format_numeral(n + 1 + offset, style)}"
+    log.info("Chapter labels: %d (%s %s ... %s)", len(found), word, format_numeral(1 + offset, style), format_numeral(len(found) + offset, style))
 
 
 def find_numbered_chapters(blocks: list[Block]) -> list[Block]:
@@ -124,7 +159,7 @@ def find_numbered_chapters(blocks: list[Block]) -> list[Block]:
     candidates: list[_Break] = []
     previous: Block | None = None
     for i, b in enumerate(blocks):
-        if b.kind not in (Kind.PARAGRAPH, Kind.HEADING) or b.box is None or b.marker == "part":
+        if b.kind not in (Kind.PARAGRAPH, Kind.HEADING) or b.box is None or b.marker in ("part", "known", "label"):
             previous = b if b.kind not in (Kind.FOOTNOTE,) else previous
             continue
         same_page = previous is not None and previous.page == b.page and previous.box is not None

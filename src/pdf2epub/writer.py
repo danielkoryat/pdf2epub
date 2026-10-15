@@ -40,6 +40,12 @@ a.noteref { text-decoration: none; vertical-align: super; font-size: 0.75em; lin
 section.notes { margin-top: 2.5em; border-top: 1px solid #999; padding-top: 0.6em; font-size: 0.85em; }
 aside.footnote { margin: 0 0 0.5em; }
 aside.footnote a.backlink { text-decoration: none; font-weight: bold; }
+section.contents h1 { margin: 1.5em 0 1.2em; }
+section.contents ol { list-style: none; margin: 0; padding: 0; }
+section.contents li { margin: 0.45em 0; }
+section.contents li ol { padding-START: 1.5em; }
+section.contents li li { margin: 0.25em 0; }
+section.contents a { text-decoration: none; }
 .cover-image { text-align: center; margin: 0; padding: 0; }
 .cover-image img { max-width: 100%; max-height: 100%; }
 """
@@ -156,6 +162,64 @@ class _ChapterRenderer:
         return opening_tag + "\n".join(out) + "</section>"
 
 
+CONTENTS_LABELS = {
+    "he": "תוכן העניינים",
+    "en": "Contents",
+    "ar": "المحتويات",
+    "fa": "فهرست",
+    "yi": "אינהאַלט",
+    "fr": "Table des matières",
+    "de": "Inhalt",
+    "es": "Índice",
+    "it": "Indice",
+    "pt": "Sumário",
+    "nl": "Inhoud",
+    "ru": "Содержание",
+    "uk": "Зміст",
+    "pl": "Spis treści",
+}
+
+
+def contents_label(language: str) -> str:
+    return CONTENTS_LABELS.get(language.split("-")[0].lower(), "Contents")
+
+
+def _contents_page(book: Book, entries: list[tuple[epub.Link, list[epub.Link]]]) -> epub.EpubHtml:
+    def link(entry: epub.Link) -> str:
+        href = Path(entry.href).name  # the contents page lives in text/ next to the chapters
+        return f'<a href="{href}"{_dir_attr(entry.title, book.direction)}>{html.escape(entry.title, quote=False)}</a>'
+
+    rows = []
+    for entry, children in entries:
+        sub = "".join(f"<li>{link(child)}</li>" for child in children)
+        rows.append(f"<li>{link(entry)}{f'<ol>{sub}</ol>' if sub else ''}</li>")
+    label = contents_label(book.language)
+    page = epub.EpubHtml(uid="contents", file_name="text/contents.xhtml", title=label, lang=book.language, direction=book.direction)
+    page.content = f'<section class="contents"><h1>{html.escape(label)}</h1><ol>{"".join(rows)}</ol></section>'
+    page.add_link(href="../styles/book.css", rel="stylesheet", type="text/css")
+    return page
+
+
+def _add_accessibility_metadata(eb: epub.EpubBook, has_images: bool) -> None:
+    """schema.org accessibility metadata (EPUB Accessibility 1.1), as reading systems and stores expect."""
+    meta = [
+        ("schema:accessMode", "textual"),
+        *([("schema:accessMode", "visual")] if has_images else []),
+        ("schema:accessModeSufficient", "textual"),
+        ("schema:accessibilityFeature", "tableOfContents"),
+        ("schema:accessibilityFeature", "readingOrder"),
+        ("schema:accessibilityFeature", "structuralNavigation"),
+        ("schema:accessibilityHazard", "none"),
+        (
+            "schema:accessibilitySummary",
+            "Reflowable text with a navigable table of contents and headings; reading order follows the "
+            "original book. Text of scanned pages was produced by OCR and may contain recognition errors.",
+        ),
+    ]
+    for prop, value in meta:
+        eb.add_metadata(None, "meta", value, {"property": prop})
+
+
 def write_epub(book: Book, path: Path) -> None:
     eb = epub.EpubBook()
     eb.set_identifier(f"urn:uuid:{uuid.uuid4()}")
@@ -217,13 +281,24 @@ def write_epub(book: Book, path: Path) -> None:
     nav.add_item(css)
     eb.add_item(nav)
 
-    eb.spine = (["cover"] if book.cover else []) + items + [("nav", "no")]
+    first_body = next((i for i, ch in enumerate(book.chapters) if ch.in_toc), 0)
+    spine_items: list = list(items)
+    toc_href = "nav.xhtml"
+    if sum(1 + len(children) for _link, children in entries) >= 2:
+        # A contents page in the reading order, after the front matter -- what printed books and
+        # Kindle's publishing guidelines expect, in addition to the reader's own navigation menu.
+        contents = _contents_page(book, entries)
+        eb.add_item(contents)
+        spine_items.insert(first_body, contents)
+        toc_href = contents.file_name
+    # Without a contents page, the navigation document stays reachable as a non-linear spine item.
+    eb.spine = (["cover"] if book.cover else []) + spine_items + ([("nav", "no")] if toc_href == "nav.xhtml" else [])
     if book.cover:
         eb.guide.append({"href": "cover.xhtml", "title": "Cover", "type": "cover"})
-    eb.guide.append({"href": "nav.xhtml", "title": "Table of Contents", "type": "toc"})
-    first_body = next((it for it, ch in zip(items, book.chapters) if ch.in_toc), items[0] if items else None)
-    if first_body is not None:
-        eb.guide.append({"href": first_body.file_name, "title": "Start", "type": "text"})
+    eb.guide.append({"href": toc_href, "title": contents_label(book.language), "type": "toc"})
+    if items:
+        eb.guide.append({"href": items[first_body].file_name, "title": "Start", "type": "text"})
+    _add_accessibility_metadata(eb, has_images=bool(images) or bool(book.cover))
 
     path.parent.mkdir(parents=True, exist_ok=True)
     epub.write_epub(str(path), eb, {"epub3_pages": False})

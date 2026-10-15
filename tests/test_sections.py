@@ -74,3 +74,25 @@ def test_nested_toc_in_epub(tmp_path: Path):
     # the part's entry contains its own list of chapters
     part = nav.index(">הזר<")
     assert nav.index("<ol>", part) < nav.index(">א<") < nav.index(">ה<")
+
+
+def test_contents_page_and_accessibility_metadata(tmp_path: Path):
+    import re
+
+    from pdf2epub.validate import check_epub, epubcheck_available
+
+    front = [Block(Kind.PARAGRAPH, text="© 2005 כל הזכויות שמורות", page=0, first_on_page=True)]
+    chapters = build_chapters(clean(front + _novel(), 6))
+    out = tmp_path / "contents.epub"
+    write_epub(Book(title="הזר", authors=["אלבר קאמי"], language="he", direction="rtl", chapters=chapters), out)
+    with zipfile.ZipFile(out) as z:
+        opf = z.read("EPUB/content.opf").decode()
+        contents = z.read("EPUB/text/contents.xhtml").decode()
+    assert "תוכן העניינים" in contents and 'href="ch' in contents and contents.count("<ol>") == 2
+    spine = re.findall(r'<itemref idref="([^"]+)"', opf)
+    assert spine.index("contents") == spine.index("ch001") + 1  # after the front matter, before the first part
+    assert 'property="schema:accessibilityFeature">tableOfContents' in opf
+    assert 'type="toc"' in opf and "text/contents.xhtml" in opf
+    if epubcheck_available():
+        result = check_epub(out)
+        assert result is not None and result.ok, result.errors

@@ -295,7 +295,7 @@ def _area(a: tuple[float, float, float, float]) -> float:
     return max(a[2] - a[0], 0) * max(a[3] - a[1], 0)
 
 
-_BULLET = re.compile(r"^\s*[•·▪◦‣●■□\-–—]\s+")
+_BULLET = re.compile(r"^\s*[•·▪◦‣●■□\-\u2013\u2014]\s+")
 _NUMBERED = re.compile(r"^\s*(\(?\d{1,3}[.)]|\(?[a-zא-ת][.)])\s+")
 
 

@@ -119,7 +119,7 @@ def _make_chapter(blocks: list[Block], front_matter: bool) -> Chapter:
         if b.kind is not Kind.HEADING or b.page != blocks[0].page:
             break
         title_parts.append(b.text)
-    title = " — ".join(title_parts) or None
+    title = ": ".join(title_parts) or None
     body_chars = sum(len(b.text) for b in blocks if b.kind in (Kind.PARAGRAPH, Kind.LIST_ITEM, Kind.TABLE))
     text = " ".join(b.text for b in blocks)
     in_toc = (

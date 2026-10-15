@@ -14,10 +14,10 @@ log = logging.getLogger(__name__)
 
 # A paragraph that ends with one of these is complete; otherwise it continues on the next page.
 _TERMINAL = tuple(".!?…:;\"”’'»״)]׃。！？")
-_PAGE_NUMBER = re.compile(r"^[\s\-–—]*(\d{1,4}|[ivxlcdm]{1,6})[\s\-–—]*$", re.IGNORECASE)
+_PAGE_NUMBER = re.compile(r"^[\s\-\u2013\u2014]*(\d{1,4}|[ivxlcdm]{1,6})[\s\-\u2013\u2014]*$", re.IGNORECASE)
 _LATIN_HYPHEN_BREAK = re.compile(r"([a-zà-öø-ÿ])[-­] +([a-zà-öø-ÿ])")
 DECORATIVE_SCALE = 5.0
-SCENE_BREAK = re.compile(r"^[\s*·•~#⁂◆◇❖✦⁎=_\-–—]{1,20}$")
+SCENE_BREAK = re.compile(r"^[\s*·•~#⁂◆◇❖✦⁎=_\-\u2013\u2014]{1,20}$")
 _FOOTNOTE_MARKER = re.compile(r"^\s*(\*{1,4}|[†‡§¶]{1,3}|\d{1,3}|[¹²³⁴⁵⁶⁷⁸⁹⁰]{1,3})[\s.)\]]*")
 
 

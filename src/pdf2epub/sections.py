@@ -36,7 +36,7 @@ _ROMAN = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100}
 def parse_numeral(text: str) -> tuple[int, str] | None:
     """(value, style) of a chapter numeral such as 'ב', 'יא', '7', 'IV', 'פרק ג', 'Chapter 3'."""
     t = re.sub(r"^(פרק|chapter|chapitre|kapitel|capítulo)\s+", "", text.strip(), flags=re.IGNORECASE)
-    t = t.strip(" .:-–—'\"׳״")
+    t = t.strip(" .:-\u2013\u2014'\"׳״")
     if t.isdigit() and len(t) <= 3:
         return int(t), "arabic"
     if t and all(ch in _HEB_VALUES for ch in t) and len(t) <= 3:

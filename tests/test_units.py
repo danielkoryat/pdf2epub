@@ -257,3 +257,18 @@ def test_corrector_keeps_real_words_with_prefixes():
     c = Corrector("he", freqs)
     assert c.fix("וחצרות") == "וחצרות"  # ו + חצרות is a real word
     assert c.fix("עריין") == "עדיין"
+
+
+def test_dash_styled_page_numbers_and_scene_breaks():
+    dash = "—"
+    blocks = [
+        para("Text.", 1, first=True),
+        para(f"{dash} 14 {dash}", 1, top=0.95),  # page number printed between dashes: dropped
+        para(dash * 3, 1),  # scene break: kept
+        para("2014", 1),  # a year is not a scene break
+    ]
+    out = clean(blocks, 1)
+    assert [b.text for b in out] == ["Text.", dash * 3, "2014"]
+    from pdf2epub.cleanup import SCENE_BREAK
+
+    assert SCENE_BREAK.match(dash * 3) and not SCENE_BREAK.match("2014")

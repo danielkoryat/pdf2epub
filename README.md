@@ -1,6 +1,6 @@
 # pdf2epub
 
-Turn PDF books — born-digital **or scanned** — into clean EPUB 3 e-books that read well on Kindle and other
+Turn PDF books, born-digital **or scanned**, into clean EPUB 3 e-books that read well on Kindle and other
 e-readers. Built for Hebrew (right-to-left) and English, and works for any language Tesseract can read.
 
 * **Scanned pages are detected automatically** and OCR'd (Tesseract, in parallel on all CPU cores), including
@@ -11,7 +11,7 @@ e-readers. Built for Hebrew (right-to-left) and English, and works for any langu
 * **Right-to-left done properly**: logical text order, RTL page turning on Kindle, mixed Hebrew/English
   paragraphs.
 * **OCR clean-up**: typical letter confusions (Hebrew ד/ר, ה/ח, ב/כ) fixed with a word-frequency check.
-* **Local web UI** to upload, follow progress, review and edit chapters, preview, and download — or a CLI.
+* **Local web UI** to upload, follow progress, review and edit chapters, preview, and download. There is also a CLI.
 * Output validated with W3C **EPUBCheck**.
 
 Everything runs locally; nothing is uploaded anywhere.
@@ -24,12 +24,12 @@ Everything runs locally; nothing is uploaded anywhere.
    ```
    On Windows and Linux this installs a CUDA build of PyTorch, so Docling's layout model uses an NVIDIA GPU
    when there is one (it falls back to the CPU otherwise).
-2. **Tesseract 5** — only needed for scanned PDFs. Windows: the
+2. **Tesseract 5**, only needed for scanned PDFs. Windows: the
    [UB Mannheim installer](https://github.com/UB-Mannheim/tesseract/wiki); macOS: `brew install tesseract`;
    Debian/Ubuntu: `apt install tesseract-ocr`. Language models are downloaded automatically into
-   `models/tessdata/` the first time a language is needed — the system install is never modified.
+   `models/tessdata/` the first time a language is needed; the system install is never modified.
    Set `PDF2EPUB_TESSERACT` if `tesseract` is not on your PATH.
-3. **Optional — EPUBCheck** (validates the output; Send-to-Kindle rejects broken EPUBs): unzip a
+3. **Optional: EPUBCheck** (validates the output; Send-to-Kindle rejects broken EPUBs): unzip a
    [Temurin JRE](https://adoptium.net/) and [EPUBCheck](https://github.com/w3c/epubcheck/releases) into `tools/`
    (`tools/jdk-*/` and `tools/epubcheck-*/`), or point `PDF2EPUB_JAVA` / `PDF2EPUB_EPUBCHECK` at them.
 
@@ -95,7 +95,7 @@ PDF ─► analyse ─────► extract ───────────�
 * OCR is ~99% accurate on clean scans. Foreign-script words inside a page (e.g. French in a Hebrew novel) and
   low-resolution scans produce some errors.
 * Chapter detection relies on headings that open a page and are printed larger than the text; unusual
-  typography can add or miss a chapter — fix those in the web UI's review step.
+  typography can add or miss a chapter. Fix those in the web UI's review step.
 * Old Hebrew PDFs that store text in *visual* (reversed) order are detected and reported, not yet fixed.
 * Bold/italic formatting is not carried over yet.
 
@@ -111,7 +111,7 @@ More background on the design decisions (and the approaches that were tried and 
 
 ## License
 
-[AGPL-3.0-or-later](LICENSE) — required because PyMuPDF and EbookLib are AGPL-3.0.
+[AGPL-3.0-or-later](LICENSE), required because PyMuPDF and EbookLib are AGPL-3.0.
 
 Other components: Docling (MIT), Tesseract and its language models (Apache 2.0), word frequencies from
 [FrequencyWords](https://github.com/hermitdave/FrequencyWords) (CC BY-SA 4.0, downloaded at run time).

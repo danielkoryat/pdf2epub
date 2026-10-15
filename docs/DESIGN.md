@@ -1,6 +1,6 @@
-# pdf2epub — design notes
+# pdf2epub design notes
 
-Goal: turn PDFs — born-digital or scanned — into EPUB 3 books that look professionally made on Kindle and
+Goal: turn PDFs, born-digital or scanned, into EPUB 3 books that look professionally made on Kindle and
 other readers. Hebrew (right-to-left) and English first; nothing in the pipeline is specific to one language.
 
 ## Pipeline
@@ -15,7 +15,7 @@ PDF ─► analyse ─► extract ───────────────�
 ```
 
 The `Book` model (`model.py`) sits between extraction and writing. `pipeline.prepare()` produces a `Draft`
-(the slow part); `pipeline.build()` writes it — the web UI lets the user edit the draft in between.
+(the slow part); `pipeline.build()` writes it. The web UI lets the user edit the draft in between.
 
 ## Decisions and why
 
@@ -27,12 +27,12 @@ text comes from MuPDF lines (born-digital) or Tesseract paragraphs (scanned), ea
 region it overlaps most.
 
 **Our own OCR stage** (`ocr.py`, plugged into Docling through a `StandardPdfPipeline` subclass):
-* pages rendered with MuPDF at ~2× the scan's native resolution (capped at 300 dpi) — measurably fewer
+* pages rendered with MuPDF at ~2× the scan's native resolution (capped at 300 dpi), with measurably fewer
   confusions than both native resolution and 3×;
 * Tesseract runs in parallel threads, one process per core (≈1.4 s/page on a 14-core laptop);
 * Tesseract's own paragraphs are kept: it detects indentation and keeps right-to-left word order, while
   Docling's regrouping of OCR words into its layout boxes could shuffle words between boxes;
-* pages that read badly (mean confidence < 60) are retried with the script Tesseract detects on that page —
+* pages that read badly (mean confidence < 60) are retried with the script Tesseract detects on that page:
   an English copyright page inside a Hebrew book goes from 52 to 93 confidence.
 
 **One OCR language at a time.** `heb+eng` is worse than `heb` alone on Hebrew text (common Hebrew words get
@@ -42,7 +42,7 @@ are handled by the retry above.
 **Scanned-page detection** is per page: little meaningful text and mostly covered by an image. Text repeated
 on many pages (a watermark stamped on every page) doesn't count as meaningful, and is removed from the page
 before OCR. An image page carrying only *invisible* text is a scan with someone else's OCR layer (phone
-scanner apps, Acrobat); such layers can be poor — one app stores Hebrew words reversed — so it is re-OCR'd.
+scanner apps, Acrobat); such layers can be poor (one app stores Hebrew words reversed), so it is re-OCR'd.
 
 **OCR letter fixes** (`spell.py`): Tesseract confuses Hebrew ד/ר, ה/ח, ב/כ. A word that is (nearly) unknown in
 a word-frequency list but becomes a common word by swapping such letters is fixed. Real words are never

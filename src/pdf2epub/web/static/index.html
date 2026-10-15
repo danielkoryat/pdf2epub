@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF to EPUB</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='6' y='3' width='20' height='26' rx='3' fill='%233b6ef5'/%3E%3Cpath d='M11 10h10M11 15h10M11 20h6' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="6" y="3" width="20" height="26" rx="3"/><path d="M11 10h10M11 15h10M11 20h6"/></svg>
+      <span>PDF <span class="arrow">→</span> EPUB</span>
+    </div>
+    <div class="chips" id="chips"></div>
+  </header>
+
+  <main>
+    <!-- Home: upload + job list -->
+    <section id="home">
+      <form id="upload" class="card">
+        <label id="drop" class="drop" for="file">
+          <input id="file" name="file" type="file" accept="application/pdf,.pdf" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></svg>
+          <strong id="drop-title">Drop a PDF here or click to choose</strong>
+          <span id="drop-sub" class="muted">Born-digital or scanned · Hebrew, English and other languages</span>
+        </label>
+
+        <details class="options">
+          <summary>Options</summary>
+          <div class="grid">
+            <label>Title <input name="title" dir="auto" placeholder="From the PDF"></label>
+            <label>Author <input name="author" dir="auto" placeholder="Comma-separated"></label>
+            <label>Book language
+              <select name="language">
+                <option value="">Detect automatically</option>
+                <option value="he">Hebrew</option><option value="en">English</option>
+                <option value="ar">Arabic</option><option value="fr">French</option>
+                <option value="de">German</option><option value="es">Spanish</option>
+                <option value="ru">Russian</option><option value="it">Italian</option>
+              </select>
+            </label>
+            <label>OCR
+              <select name="ocr">
+                <option value="auto">Scanned pages only</option>
+                <option value="always">Every page</option>
+                <option value="never">Never</option>
+              </select>
+            </label>
+            <label>OCR language <input name="ocr_lang" placeholder="Detect (e.g. heb, eng, fra)"></label>
+            <div class="checks">
+              <label class="check"><input type="checkbox" name="cover" checked> Use page 1 as the cover</label>
+              <label class="check"><input type="checkbox" name="review" checked> Review chapters before building</label>
+            </div>
+          </div>
+        </details>
+
+        <div class="actions">
+          <div id="upload-progress" class="progress hidden"><div></div></div>
+          <button id="convert" class="primary" type="submit" disabled>Convert</button>
+        </div>
+      </form>
+
+      <h2 class="section-title">Conversions</h2>
+      <div id="jobs" class="jobs"></div>
+      <p id="no-jobs" class="muted empty hidden">Nothing converted yet.</p>
+    </section>
+
+    <!-- Review a prepared book -->
+    <section id="review" class="hidden">
+      <div class="review-head">
+        <button class="ghost" id="back" type="button">← Back</button>
+        <h2 id="review-title">Review</h2>
+      </div>
+
+      <div class="card meta">
+        <img id="cover" alt="Cover" class="cover hidden">
+        <div class="grid">
+          <label>Title <input id="m-title" dir="auto"></label>
+          <label>Author <input id="m-authors" dir="auto" placeholder="Comma-separated"></label>
+          <label>Language <input id="m-language" placeholder="he, en, fr…"></label>
+          <label class="check" id="m-cover-wrap"><input type="checkbox" id="m-cover" checked> Include cover</label>
+          <p id="m-summary" class="muted span2"></p>
+          <ul id="m-warnings" class="warnings span2"></ul>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="table-head">
+          <h3>Chapters</h3>
+          <p class="muted">Untick <em>Contents</em> for false chapters, or merge them into the chapter before. Titles can be edited.</p>
+        </div>
+        <div class="table-wrap">
+          <table id="chapters">
+            <thead><tr><th>Contents</th><th>Title</th><th>Pages</th><th>Words</th><th>Merge</th><th>Remove</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="sticky-actions">
+        <span id="build-note" class="muted"></span>
+        <button id="build" class="primary" type="button">Build EPUB</button>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="preview">
+    <div class="dialog-head">
+      <h3 id="preview-title"></h3>
+      <button class="ghost" type="button" id="preview-close" aria-label="Close">✕</button>
+    </div>
+    <div id="preview-body" class="preview-body"></div>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

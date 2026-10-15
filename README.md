@@ -1,7 +1,8 @@
 # pdf2epub
 
 Turn PDF books, born-digital **or scanned**, into clean EPUB 3 e-books that read well on Kindle and other
-e-readers. Built for Hebrew (right-to-left) and English, and works for any language Tesseract can read.
+e-readers, and **enrich EPUB files you already have**. Built for Hebrew (right-to-left) and English, and works
+for any language Tesseract can read.
 
 * **Scanned pages are detected automatically** and OCR'd (Tesseract, in parallel on all CPU cores), including
   scans that carry a poor OCR layer from a phone scanner app.
@@ -10,8 +11,15 @@ e-readers. Built for Hebrew (right-to-left) and English, and works for any langu
   headers and watermarks removed; paragraphs split across pages joined again.
 * **Right-to-left done properly**: logical text order, RTL page turning on Kindle, mixed Hebrew/English
   paragraphs.
+* **Accurate chapters**: the PDF's bookmarks or the book's printed contents page are used when present, chapter
+  labels ("פרק ג", "Chapter 3") are recognised and renumbered when OCR garbles them, and you can merge or split
+  chapters by hand in the review step.
 * **OCR clean-up**: typical letter confusions (Hebrew ד/ר, ה/ח, ב/כ) fixed with a word-frequency check.
-* **Local web UI** to upload, follow progress, review and edit chapters, preview, and download. There is also a CLI.
+* **EPUB enrichment**: language and right-to-left fixes, a contents page, navigation landmarks, accessibility
+  metadata, the cover, title and authors, and an EPUB 2 to EPUB 3 upgrade, without touching the book's own text
+  and styling.
+* **Local web UI** with a library of everything you converted (kept in a local SQLite database). There is also
+  a CLI.
 * Output validated with W3C **EPUBCheck**.
 
 Everything runs locally; nothing is uploaded anywhere.
@@ -40,10 +48,18 @@ uv run pdf2epub-web            # opens http://127.0.0.1:5050
 uv run pdf2epub-web --port 5060 --no-browser
 ```
 
-Upload a PDF, follow the progress, then **review** the result before the EPUB is written: edit the title,
-author and language, rename chapters, untick false chapters from the table of contents, merge them into the
-previous chapter or remove them, and preview each chapter's text. *Edit chapters* on a finished book rebuilds
-it from the same OCR result without re-reading the PDF. Jobs and files are kept in `data/jobs/`.
+**PDF**: upload, follow the progress, then **review** the result before the EPUB is written: edit the title,
+author and language, rename chapters, untick false chapters from the table of contents, tick several chapters
+and **merge** them into one (and give it a name), or open a chapter's preview and click ✂ at any paragraph to
+**start a new chapter** there. *Edit chapters* on a finished book rebuilds it from the same OCR result without
+re-reading the PDF.
+
+**EPUB**: upload an existing book to see what it lacks (language, right-to-left settings, contents page,
+landmarks, accessibility metadata, cover, EPUB 3), tick the improvements you want, optionally set a new cover,
+title or author, and download the enriched copy. EPUBCheck runs before and after.
+
+The library (title, author, language, status, the edits you made, and the result) is stored in
+`data/pdf2epub.db` (SQLite); the uploaded and produced files are kept in `data/jobs/`.
 
 The server listens on this computer only (127.0.0.1). The default port is 5050 (5000 is often taken by macOS
 AirPlay or Docker); ports 3000–3004 and 8000–8020 are refused so it never collides with other dev servers.
@@ -56,6 +72,10 @@ uv run pdf2epub book.pdf -o out/book.epub --title "Title" --author "Author"
 uv run pdf2epub book.pdf --pages 1-30           # quick trial on part of a book
 uv run pdf2epub book.pdf --ocr-lang fra         # Latin-script scans in a language other than English
 uv run pdf2epub book.pdf --ocr always           # ignore an existing (bad) text layer and OCR everything
+
+uv run pdf2epub book.epub                       # enrich an EPUB: writes book.enriched.epub
+uv run pdf2epub book.epub --inspect             # only list what the EPUB lacks
+uv run pdf2epub book.epub --cover cover.jpg --lang he --no-upgrade
 ```
 
 Run `uv run pdf2epub --help` for all options.

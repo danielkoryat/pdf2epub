@@ -63,6 +63,43 @@ pop-up footnotes (`epub:type="noteref"` → `aside epub:type="footnote"` with a 
 recommended size, no CSS `direction` (EPUBCheck forbids it). Every build is validated with EPUBCheck when
 it is available.
 
+**Chapters the book declares come first** (`known.py`): a PDF's bookmarks give exact titles and pages; a
+printed contents page ("title … number" lines near the start or end, numbers mostly rising, years excluded)
+is mapped to PDF pages through the page numbers printed in the page margins, and trusted only when most of
+its entries are found as lines in the text. Then the declared chapters replace the guessed ones and the printed
+contents page is dropped (its page numbers mean nothing in an EPUB).
+
+**Chapter labels** (`sections.py`): when a book labels chapters "פרק ג" / "Chapter 3" / "CHAPTER III", the
+labels are the chapters; OCR garbles them ("פרקר" for פרק ד), so they are renumbered in sequence when the
+readable ones agree with it. Other headings between the first and the last label stay inside their chapter.
+
+**Running heads**: short lines repeated at the top or bottom edge of many pages (book title, author, chapter
+title) are removed, whether the layout model calls them headings or text; the same words further down a
+page (a real title) stay.
+
+**Manual control**: the review step lets the user merge any run of chapters into one with a new name, and
+split a chapter at any paragraph from its preview (`edit.py` applies splits, then titles, then merges).
+
+## Enriching existing EPUBs (`enrich.py`)
+
+Surgical, not a rebuild: the ZIP is read into memory and only the package document, the navigation document,
+chapter `<html>` start tags (by regex, so the publisher's markup is untouched) and new files change. Steps:
+language (missing, mismatched with the text's script, or set by the user), title/authors, RTL page progression
+and Kindle writing mode, `lang`/`dir` on chapters, cover marking or a new cover, a contents page from the nav
+or NCX (skipped when the book already has one), landmarks, accessibility metadata, optional OCR letter fixes.
+EPUB 2 books are upgraded to EPUB 3: `opf:` attributes become refining metas, a nav document is generated from
+the NCX, XHTML 1.1 doctypes become HTML5, HTML4 leftovers HTML5 rejects are fixed (table `summary`, the
+`http-equiv` content type), and `svg`/`scripted` manifest properties are added. Enriching twice changes nothing.
+On eight real EPUBs (Hebrew and English, EPUB 2 and 3) no enrichment added an EPUBCheck error, and one book
+went from 7 errors to 3.
+
+## Web UI storage
+
+Jobs are rows in a SQLite database (`data/pdf2epub.db`, WAL mode): kind (PDF conversion or EPUB enrichment),
+file name, title, authors, language, status, options, summary, report, the user's edits and recent log lines.
+Large files stay in `data/jobs/<id>/`. Jobs recorded by older versions as `job.json` files are imported on
+start, and drafts saved by older versions are given the fields added since.
+
 ## Rejected / optional
 
 * **Surya OCR** (VLM-based, GPU): about as accurate as Tesseract on Hebrew, better on Latin words inside Hebrew
@@ -71,6 +108,6 @@ it is available.
 
 ## Ideas
 
-Bold/italic from born-digital PDFs, print page numbers as an EPUB page-list, language detection for
+Bold/italic from born-digital PDFs, print page numbers as an EPUB page-list, footnote pop-ups for enriched EPUBs, language detection for
 Latin-script scans (French/German…), letter-confusion pairs for more languages, fixing (not just detecting)
 Hebrew PDFs stored in visual order, an optional AI proofreading pass for OCR'd books.

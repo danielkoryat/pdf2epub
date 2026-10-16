@@ -254,6 +254,30 @@ def _port_free(host: str, port: int) -> bool:
     return True
 
 
+def _is_pdf2epub(url: str) -> bool:
+    """Whether the server answering at url is pdf2epub (its /api/info reports the tools it found)."""
+    import json
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{url}/api/info", timeout=2) as res:
+            return "epubcheck" in json.load(res)
+    except (OSError, ValueError):
+        return False
+
+
+def _open_when_ready(url: str, timeout: float = 60.0) -> None:
+    """Open the browser once the server answers, rather than after a fixed delay."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _is_pdf2epub(url):
+            webbrowser.open(url)
+            return
+        time.sleep(0.3)
+
+
 def main(argv: list[str] | None = None) -> int:
     import uvicorn
 
@@ -267,7 +291,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.port in RESERVED_PORTS:
         print(f"error: port {args.port} is left free for other dev servers (3000-3004, 8000-8020); pick another", file=sys.stderr)
         return 2
+    url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '') else args.host}:{args.port}"
     if not _port_free(args.host, args.port):
+        if _is_pdf2epub(url):
+            # Started again (e.g. from the desktop shortcut) while already running: just show the page.
+            print(f"pdf2epub is already running at {url}")
+            if not args.no_browser:
+                webbrowser.open(url)
+            return 0
         print(f"error: port {args.port} is already in use; run with --port <other>", file=sys.stderr)
         return 2
 
@@ -277,10 +308,9 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8")
 
     app = create_app(args.data)
-    url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '') else args.host}:{args.port}"
-    print(f"pdf2epub is running at {url}  (Ctrl+C to stop)")
+    print(f"pdf2epub is running at {url}  (close this window or press Ctrl+C to stop)")
     if not args.no_browser:
-        threading.Timer(1.0, webbrowser.open, args=(url,)).start()
+        threading.Thread(target=_open_when_ready, args=(url,), daemon=True).start()
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
 

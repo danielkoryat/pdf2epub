@@ -48,6 +48,10 @@ uv run pdf2epub-web            # opens http://127.0.0.1:5050
 uv run pdf2epub-web --port 5060 --no-browser
 ```
 
+On Windows, `powershell -ExecutionPolicy Bypass -File scripts\create-desktop-shortcut.ps1` puts a **PDF to EPUB**
+shortcut on the desktop: it starts the server in a minimized window and opens the page (or just opens the page
+when the server is already running). Close that window to stop the server.
+
 **PDF**: upload, follow the progress, then **review** the result before the EPUB is written: edit the title,
 author and language, rename chapters, untick false chapters from the table of contents, tick several chapters
 and **merge** them into one (and give it a name), or open a chapter's preview and click ✂ at any paragraph to

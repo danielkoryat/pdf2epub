@@ -14,9 +14,26 @@
       <span>PDF <span class="arrow">→</span> EPUB</span>
     </div>
     <div class="chips" id="chips"></div>
+    <div class="account" id="account"></div>
   </header>
 
   <main>
+    <!-- Sign-in (server mode) -->
+    <section id="signin" class="hidden">
+      <div class="card signin-card">
+        <h1>Turn your PDF books into e-books</h1>
+        <p class="muted">Convert PDFs (also scanned ones) into EPUB books for Kindle and other e-readers, or improve EPUB files
+          you already have. Hebrew, English and many other languages.</p>
+        <a class="google-button" href="/auth/login">
+          <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.8 2.4 30.3 0 24 0 14.6 0 6.6 5.4 2.6 13.2l7.9 6.2C12.4 13.6 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.6c0-1.6-.1-3.1-.4-4.6H24v9h12.4c-.5 2.9-2.1 5.3-4.6 6.9l7.2 5.6c4.2-3.9 7.1-9.7 7.1-16.9z"/><path fill="#FBBC05" d="M10.5 28.6c-.5-1.4-.8-3-.8-4.6s.3-3.2.8-4.6l-7.9-6.2C1 16.5 0 20.1 0 24s1 7.5 2.6 10.8l7.9-6.2z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.2-5.6c-2 1.4-4.7 2.3-8.7 2.3-6.3 0-11.6-4.1-13.5-9.8l-7.9 6.2C6.6 42.6 14.6 48 24 48z"/></svg>
+          <span>Sign in with Google</span>
+        </a>
+        <p id="signin-msg" class="error hidden" role="alert"></p>
+        <p class="muted small">By signing in you confirm that you have the right to convert the files you upload.
+          Your books are private to your account.</p>
+      </div>
+    </section>
+
     <!-- Home: upload + job list -->
     <section id="home">
       <form id="upload" class="card">
@@ -148,7 +165,64 @@
         <button id="e-build" class="primary" type="button">Enrich EPUB</button>
       </div>
     </section>
+    <!-- Admin dashboard (server mode, admins only) -->
+    <section id="admin" class="hidden">
+      <div class="review-head">
+        <button class="ghost" id="back-admin" type="button">← Back</button>
+        <h2>Dashboard</h2>
+        <span id="a-tz" class="muted small"></span>
+      </div>
+      <nav class="tabs" id="a-tabs" role="tablist">
+        <button type="button" role="tab" data-tab="overview" class="active">Overview</button>
+        <button type="button" role="tab" data-tab="users">Users</button>
+        <button type="button" role="tab" data-tab="signins">Sign-ins</button>
+        <button type="button" role="tab" data-tab="audit">Audit log</button>
+        <button type="button" role="tab" data-tab="jobs">Jobs</button>
+      </nav>
+      <div id="a-overview" class="tab-panel">
+        <div id="a-tiles" class="tiles"></div>
+        <div id="a-charts" class="charts"></div>
+        <div class="card">
+          <div class="table-head"><h3>Countries</h3><p class="muted">People who signed in during the last 30 days</p></div>
+          <table id="a-countries" class="data"><thead><tr><th>Country</th><th>Users</th><th class="bar-col"></th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+      <div id="a-users" class="tab-panel hidden">
+        <input id="a-user-search" class="search" type="search" placeholder="Search by name or e-mail" dir="auto">
+        <div class="card table-wrap"><table class="data" id="a-users-table"><thead><tr>
+          <th>User</th><th>Country</th><th>Last sign-in</th><th>Books</th><th>Pages this month</th><th>Pages left</th><th>Storage</th><th>Status</th><th></th>
+        </tr></thead><tbody></tbody></table></div>
+      </div>
+      <div id="a-signins" class="tab-panel hidden">
+        <div class="card table-wrap"><table class="data" id="a-signins-table"><thead><tr>
+          <th>Time</th><th>User</th><th>IP address</th><th>Country</th><th>Browser</th><th>Result</th>
+        </tr></thead><tbody></tbody></table></div>
+      </div>
+      <div id="a-audit" class="tab-panel hidden">
+        <div class="toolbar">
+          <select id="a-audit-action"><option value="">All events</option><option>auth.</option><option>job.</option><option>admin.</option><option>rate.</option></select>
+          <select id="a-audit-outcome"><option value="">Any result</option><option value="ok">ok</option><option value="denied">denied</option><option value="error">error</option></select>
+          <button type="button" id="a-verify">Check integrity</button>
+          <span id="a-verify-result" class="muted small"></span>
+        </div>
+        <div class="card table-wrap"><table class="data" id="a-audit-table"><thead><tr>
+          <th>Time</th><th>Event</th><th>Result</th><th>User</th><th>IP / country</th><th>Target</th><th>Details</th>
+        </tr></thead><tbody></tbody></table></div>
+        <button type="button" id="a-audit-more" class="ghost">Load older events</button>
+      </div>
+      <div id="a-jobs" class="tab-panel hidden">
+        <div class="card table-wrap"><table class="data" id="a-jobs-table"><thead><tr>
+          <th>Created</th><th>User</th><th>Kind</th><th>Status</th><th>Pages</th><th>Size</th><th>Worker</th><th>Error</th>
+        </tr></thead><tbody></tbody></table></div>
+      </div>
+    </section>
   </main>
+
+  <footer class="footer muted small">
+    pdf2epub is open source (AGPL-3.0) · <a href="https://github.com/danielkoryat/pdf2epub" rel="noopener" target="_blank">Source code</a>
+  </footer>
+
+  <div id="tooltip" class="tooltip hidden" role="tooltip"></div>
 
   <dialog id="preview">
     <div class="dialog-head">

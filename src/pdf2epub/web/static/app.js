@@ -14,14 +14,96 @@ const el = (tag, attrs = {}, ...children) => {
   return node;
 };
 
+let MODE = "local";
+let ME = null;
+
 async function api(path, options = {}) {
-  const res = await fetch(path, options);
+  const res = await fetch(path, { credentials: "same-origin", ...options });
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
-    throw new Error(detail);
+    if (res.status === 401 && MODE === "server") showSignIn();
+    const err = new Error(detail);
+    err.status = res.status;
+    throw err;
   }
   return res.status === 204 ? null : res.json();
+}
+
+/* ---------------------------------------------------------------- analytics (PostHog, when configured) */
+
+let analytics = null;
+
+function loadAnalytics(config) {
+  // Loaded from PostHog's own host (allowed by the page's Content-Security-Policy); book titles and file names
+  // are never sent, only event names, kinds and sizes.
+  const assets = config.host.replace(".i.posthog.com", "-assets.i.posthog.com");
+  const script = el("script", { src: `${assets}/static/array.js`, async: true });
+  script.addEventListener("load", () => {
+    if (!window.posthog) return;
+    window.posthog.init(config.key, {
+      api_host: config.host, person_profiles: "identified_only", capture_pageview: true,
+      autocapture: false, mask_all_text: false, session_recording: { maskAllInputs: true },
+    });
+    analytics = window.posthog;
+    if (ME) analytics.identify(ME.id, { email: ME.email, name: ME.name });
+  });
+  document.head.append(script);
+}
+
+function track(event, props = {}) {
+  try { analytics?.capture(event, props); } catch { /* analytics never breaks the app */ }
+}
+
+/* ---------------------------------------------------------------- account */
+
+function showSignIn() {
+  for (const id of ["home", "review", "review-epub", "admin"]) $(`#${id}`).classList.add("hidden");
+  $("#signin").classList.remove("hidden");
+  $("#account").replaceChildren();
+  const reason = new URLSearchParams(location.search).get("signin");
+  const messages = {
+    failed: "Signing in didn't work. Please try again.",
+    unverified: "Your Google account's e-mail address isn't verified.",
+    blocked: "This account has been blocked. If you think this is a mistake, contact the site owner.",
+  };
+  const msg = $("#signin-msg");
+  msg.textContent = messages[reason] || "";
+  msg.classList.toggle("hidden", !messages[reason]);
+}
+
+async function loadMe() {
+  ME = await api("/api/me");
+  renderAccount();
+  if (analytics) analytics.identify(ME.id, { email: ME.email, name: ME.name });
+  return ME;
+}
+
+function renderAccount() {
+  const box = $("#account");
+  if (MODE !== "server" || !ME) { box.replaceChildren(); return; }
+  const b = ME.balance;
+  const total = b.free_allowance + b.paid;
+  const pct = total ? Math.round((100 * b.available) / total) : 0;
+  const pages = el("div", { class: "who" },
+    el("span", {}, ME.name || ME.email),
+    el("span", { class: "muted", title: `${b.free_left} of ${b.free_allowance} free pages left this month${b.paid ? `, plus ${b.paid} paid pages` : ""}` },
+      `${b.available.toLocaleString()} pages left`),
+    el("div", { class: `meter ${pct < 15 ? "low" : ""}`, role: "meter", "aria-valuemin": "0", "aria-valuemax": String(total), "aria-valuenow": String(b.available), "aria-label": "Pages left" },
+      el("div", { style: `width:${pct}%` })),
+  );
+  box.replaceChildren(...[
+    ME.picture ? el("img", { class: "avatar", src: ME.picture, alt: "", referrerpolicy: "no-referrer" }) : null,
+    pages,
+    ME.role === "admin" ? el("button", { type: "button", class: "ghost", onclick: openAdmin }, "Dashboard") : null,
+    el("button", { type: "button", class: "ghost", onclick: signOut }, "Sign out"),
+  ].filter(Boolean));
+}
+
+async function signOut() {
+  try { await api("/auth/logout", { method: "POST" }); } catch { /* signed out anyway */ }
+  try { analytics?.reset(); } catch { /* ignore */ }
+  location.href = "/";
 }
 
 const STATUS = {
@@ -35,14 +117,18 @@ const ACTIVE = new Set(["queued", "preparing", "building"]);
 async function loadInfo() {
   try {
     const info = await api("/api/info");
+    MODE = info.mode;
+    if (info.posthog) loadAnalytics(info.posthog);
     const chips = $("#chips");
+    if (MODE === "server") { chips.replaceChildren(); return info; }
     chips.replaceChildren(
       el("span", { class: `chip ${info.tesseract ? "ok" : "warn"}`, title: "Needed for scanned PDFs" },
         info.tesseract ? "OCR ready" : "Tesseract missing"),
       el("span", { class: `chip ${info.epubcheck ? "ok" : ""}`, title: "Validates the EPUB" },
         info.epubcheck ? "EPUBCheck ready" : "No EPUBCheck"),
     );
-  } catch { /* the page still works without it */ }
+    return info;
+  } catch { return { mode: "local" }; /* the page still works without it */ }
 }
 
 /* ---------------------------------------------------------------- upload */
@@ -92,6 +178,7 @@ form.addEventListener("submit", e => {
     bar.classList.add("hidden");
     bar.firstElementChild.style.width = "0";
     if (xhr.status >= 200 && xhr.status < 300) {
+      track("book_uploaded", { kind: /\.epub$/i.test(chosen.name) ? "epub" : "pdf", size_mb: Math.round(chosen.size / 1048576), review: form.review.checked });
       chosen = null;
       form.reset();
       drop.classList.remove("has-file");
@@ -141,7 +228,8 @@ function jobCard(job) {
 
   const buttons = el("div", { class: "buttons" });
   if (job.status === "done") {
-    buttons.append(el("a", { class: "button", href: `/api/jobs/${job.id}/epub` }, el("button", { class: "primary", type: "button" }, "Download EPUB")));
+    buttons.append(el("a", { class: "button", href: `/api/jobs/${job.id}/epub`, onclick: () => track("book_downloaded", { kind: job.kind }) },
+      el("button", { class: "primary", type: "button" }, "Download EPUB")));
   }
   if (job.summary && !ACTIVE.has(job.status)) {
     const label = job.kind === "epub"
@@ -164,7 +252,8 @@ function jobCard(job) {
   if (ACTIVE.has(job.status)) {
     const pct = job.total ? Math.round((100 * job.done) / job.total) : 0;
     const bar = el("div", { class: `progress ${job.total > 1 ? "" : "indeterminate"}` }, el("div", { style: job.total > 1 ? `width:${pct}%` : "" }));
-    const label = job.status === "queued" ? "Waiting for the previous job" :
+    const label = job.status === "queued"
+      ? (job.queue_position > 1 ? `Waiting · ${job.queue_position - 1} ahead in the queue` : job.queue_position === 1 ? "Next in the queue" : "Waiting for the previous job") :
       `${job.stage_label || "Starting"}${job.total > 1 ? ` · ${job.done}/${job.total} pages` : ""}`;
     card.append(el("div", { class: "bar" }, bar, el("span", { class: "muted" }, label)));
     if (job.log.length) card.append(el("div", { class: "log", dir: "auto" }, job.log.slice(-4).join("\n")));
@@ -184,6 +273,7 @@ function jobCard(job) {
 }
 
 let allJobs = [];
+let activeKey = "";
 
 function renderJobs() {
   const q = $("#search").value.trim().toLowerCase();
@@ -196,9 +286,13 @@ function renderJobs() {
 async function refreshJobs() {
   clearTimeout(pollTimer);
   try {
+    const before = activeKey;
     allJobs = await api("/api/jobs");
+    activeKey = allJobs.filter(j => ACTIVE.has(j.status)).map(j => j.id).join();
     renderJobs();
+    if (MODE === "server" && activeKey !== before) await loadMe(); // a job started or settled: pages changed
   } catch (err) {
+    if (err.status === 401) return; // signed out: the sign-in screen is showing
     $("#jobs").replaceChildren(el("p", { class: "error" }, `Cannot reach the server: ${err.message}`));
   }
   pollTimer = setTimeout(refreshJobs, allJobs.some(j => ACTIVE.has(j.status)) ? 1500 : 6000);
@@ -217,7 +311,7 @@ async function removeJob(job) {
 let current = null; // { id, draft, rows } for a PDF; { id, draft } for an EPUB
 
 function show(section) {
-  for (const id of ["home", "review", "review-epub"]) $(`#${id}`).classList.toggle("hidden", section !== id);
+  for (const id of ["home", "review", "review-epub", "admin", "signin"]) $(`#${id}`).classList.toggle("hidden", section !== id);
   window.scrollTo(0, 0);
 }
 
@@ -406,6 +500,7 @@ $("#build").addEventListener("click", async () => {
     await api(`/api/jobs/${current.id}/build`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(collectEdits()),
     });
+    track("book_built", { kind: "pdf", chapters: current.rows.filter(r => !r.drop).length });
     show("home");
     refreshJobs();
   } catch (err) {
@@ -589,6 +684,7 @@ $("#e-build").addEventListener("click", async () => {
   $("#e-build").disabled = true;
   try {
     await api(`/api/jobs/${current.id}/build`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(edits) });
+    track("book_enriched", { new_cover: edits.new_cover });
     show("home");
     refreshJobs();
   } catch (err) {
@@ -598,7 +694,284 @@ $("#e-build").addEventListener("click", async () => {
   }
 });
 
+/* ---------------------------------------------------------------- admin dashboard (server mode) */
+
+const fmtNum = n => (n >= 10000 ? `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}K` : Number(n).toLocaleString());
+const fmtBytes = n => (n >= 1073741824 ? `${(n / 1073741824).toFixed(1)} GB` : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`);
+const fmtTime = ts => new Date(ts * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+let countryNames = null;
+try { countryNames = new Intl.DisplayNames([navigator.language || "en"], { type: "region" }); } catch { /* old browser */ }
+const countryName = cc => (cc && cc !== "unknown" && /^[A-Z]{2}$/.test(cc) ? countryNames?.of(cc) || cc : cc === "TOR" ? "Tor network" : "Unknown");
+const browserOf = ua => {
+  const m = /(Edg|OPR|Chrome|Firefox|Safari)\/[\d.]+/.exec(ua || "");
+  const os = /(Windows|Android|iPhone|iPad|Mac OS X|Linux)/.exec(ua || "");
+  const name = m ? { Edg: "Edge", OPR: "Opera" }[m[1]] || m[1] : "Other";
+  return `${name}${os ? ` · ${os[1].replace("Mac OS X", "macOS")}` : ""}`;
+};
+
+let adminTab = "overview";
+let auditBefore = null;
+
+async function openAdmin() {
+  show("admin");
+  await showAdminTab(adminTab);
+}
+
+$("#back-admin").addEventListener("click", () => { show("home"); refreshJobs(); });
+for (const button of $("#a-tabs").querySelectorAll("button")) {
+  button.addEventListener("click", () => showAdminTab(button.dataset.tab));
+}
+
+async function showAdminTab(tab) {
+  adminTab = tab;
+  for (const button of $("#a-tabs").querySelectorAll("button")) {
+    const active = button.dataset.tab === tab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  }
+  for (const name of ["overview", "users", "signins", "audit", "jobs"]) $(`#a-${name}`).classList.toggle("hidden", name !== tab);
+  try {
+    if (tab === "overview") await loadOverview();
+    else if (tab === "users") await loadUsers();
+    else if (tab === "signins") await loadSignins();
+    else if (tab === "audit") { auditBefore = null; await loadAudit(false); }
+    else if (tab === "jobs") await loadAdminJobs();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+/* ---- overview: stat tiles, three single-series column charts, countries ---- */
+
+function tile(label, value, note = "", hero = false) {
+  return el("div", { class: `tile ${hero ? "hero" : ""}` },
+    el("div", { class: "label" }, label), el("div", { class: "value" }, value), note ? el("div", { class: "note" }, note) : null);
+}
+
+async function loadOverview() {
+  const data = await api("/api/admin/overview");
+  const s = data.stats;
+  $("#a-tz").textContent = `Days in ${data.timezone}`;
+  $("#a-tiles").replaceChildren(
+    tile("Active users today", fmtNum(s.users_active_today), `${fmtNum(s.users_total)} users in total`, true),
+    tile("Sign-ins today", fmtNum(s.signins_today), s.failed_signins_today ? `${s.failed_signins_today} failed` : ""),
+    tile("New users today", fmtNum(s.users_new_today)),
+    tile("Books today", fmtNum(s.books_today), `${fmtNum(s.books_total)} in total`),
+    tile("Pages today", fmtNum(s.pages_today), `${fmtNum(s.pages_total)} converted in total`),
+    tile("Failed today", fmtNum(s.failed_today)),
+    tile("Queue", fmtNum(s.queued), `${s.running} converting now`),
+    tile("Storage", fmtBytes(s.storage_bytes)),
+    tile("Blocked requests today", fmtNum(s.blocked_requests_today), `${s.users_blocked} blocked users`),
+  );
+  const charts = $("#a-charts");
+  charts.replaceChildren(
+    columnChart("Active users per day", data.days.map(d => ({ label: d.date, value: d.active_users }))),
+    columnChart("Books per day", data.days.map(d => ({ label: d.date, value: d.books }))),
+    columnChart("Pages converted per day", data.days.map(d => ({ label: d.date, value: d.pages }))),
+  );
+  const max = Math.max(1, ...data.countries.map(c => c[1]));
+  $("#a-countries tbody").replaceChildren(...(data.countries.length ? data.countries.map(([cc, n]) => el("tr", {},
+    el("td", {}, countryName(cc)),
+    el("td", { class: "num" }, fmtNum(n)),
+    el("td", {}, el("div", { class: "inline-bar", style: `width:${(100 * n) / max}%` })),
+  )) : [el("tr", {}, el("td", { colspan: "3", class: "muted" }, "No sign-ins yet."))]));
+}
+
+const tip = $("#tooltip");
+function showTip(target, value, label) {
+  tip.replaceChildren(el("strong", {}, value), el("span", { class: "muted" }, label));
+  tip.classList.remove("hidden");
+  const r = target.getBoundingClientRect();
+  const w = tip.offsetWidth;
+  tip.style.left = `${Math.min(Math.max(8, r.left + r.width / 2 - w / 2), window.innerWidth - w - 8)}px`;
+  tip.style.top = `${Math.max(8, r.top - tip.offsetHeight - 8)}px`;
+}
+const hideTip = () => tip.classList.add("hidden");
+
+function niceMax(v) {
+  if (v <= 4) return 4;
+  const p = 10 ** Math.floor(Math.log10(v));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
+  return 10 * p;
+}
+
+// A single-series column chart (no legend: the title names it): <=24px bars with 4px rounded tops on one
+// baseline, a 2px surface gap between neighbours, hairline grid, hover/focus tooltips, and a table view.
+function columnChart(title, points) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svgEl = (tag, attrs = {}) => {
+    const n = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    return n;
+  };
+  const total = points.reduce((a, p) => a + p.value, 0);
+  const card = el("div", { class: "card viz" });
+  const tableBtn = el("button", { type: "button", class: "ghost toggle" }, "Show table");
+  card.append(el("div", { class: "chart-head" }, el("h3", {}, title), el("span", { class: "total" }, `${fmtNum(total)} in 30 days`)));
+  const svg = svgEl("svg", { role: "img", "aria-label": `${title}: ${fmtNum(total)} in the last 30 days` });
+  card.append(svg, tableBtn);
+  const table = el("table", { class: "data hidden" },
+    el("thead", {}, el("tr", {}, el("th", {}, "Date"), el("th", {}, "Value"))),
+    el("tbody", {}, points.slice().reverse().map(p => el("tr", {}, el("td", {}, p.label), el("td", { class: "num" }, fmtNum(p.value))))));
+  card.append(table);
+  tableBtn.addEventListener("click", () => {
+    table.classList.toggle("hidden");
+    tableBtn.textContent = table.classList.contains("hidden") ? "Show table" : "Hide table";
+  });
+
+  const draw = () => {
+    const W = Math.max(svg.clientWidth || 300, 200), H = 160, left = 30, right = 4, top = 8, bottom = 20;
+    const plotW = W - left - right, plotH = H - top - bottom;
+    const max = niceMax(Math.max(...points.map(p => p.value)));
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.replaceChildren();
+    for (const t of [0, max / 2, max]) {
+      const y = top + plotH - (t / max) * plotH;
+      svg.append(svgEl("line", { class: t ? "gridline" : "baseline", x1: left, x2: W - right, y1: y, y2: y }));
+      const label = svgEl("text", { class: "tick", x: left - 6, y: y + 4, "text-anchor": "end" });
+      label.textContent = fmtNum(t);
+      svg.append(label);
+    }
+    const band = plotW / points.length;
+    const bw = Math.max(2, Math.min(24, band - 2));
+    points.forEach((p, i) => {
+      const x = left + i * band + (band - bw) / 2;
+      const h = (p.value / max) * plotH;
+      const base = top + plotH;
+      if (h > 0) {
+        const r = Math.min(4, bw / 2, h);
+        const d = `M${x},${base} V${base - h + r} Q${x},${base - h} ${x + r},${base - h} H${x + bw - r} Q${x + bw},${base - h} ${x + bw},${base - h + r} V${base} Z`;
+        svg.append(svgEl("path", { class: "bar", d }));
+      }
+      const hit = svgEl("rect", { class: "hit", x: left + i * band, y: top, width: band, height: plotH, tabindex: "0",
+        "aria-label": `${p.label}: ${fmtNum(p.value)}` });
+      const show = () => showTip(hit, fmtNum(p.value), new Date(`${p.label}T12:00:00`).toLocaleDateString([], { day: "numeric", month: "short" }));
+      hit.addEventListener("pointerenter", show);
+      hit.addEventListener("focus", show);
+      hit.addEventListener("pointerleave", hideTip);
+      hit.addEventListener("blur", hideTip);
+      svg.append(hit, svgEl("rect", { class: "bar-hover", x, y: base - Math.max(h, 1), width: bw, height: Math.max(h, 1), rx: 2 }));
+      const last = points.length - 1;
+      if (i === 0 || i === last || ((last - i) % 7 === 0 && i >= 6)) { // weekly, counted back from today
+        const label = svgEl("text", { class: "tick", x: x + bw / 2, y: H - 4, "text-anchor": i === 0 ? "start" : i === points.length - 1 ? "end" : "middle" });
+        label.textContent = new Date(`${p.label}T12:00:00`).toLocaleDateString([], { day: "numeric", month: "short" });
+        svg.append(label);
+      }
+    });
+  };
+  requestAnimationFrame(draw);
+  new ResizeObserver(() => draw()).observe(svg);
+  return card;
+}
+
+/* ---- users ---- */
+
+let userSearchTimer = null;
+$("#a-user-search").addEventListener("input", () => { clearTimeout(userSearchTimer); userSearchTimer = setTimeout(loadUsers, 250); });
+
+async function loadUsers() {
+  const users = await api(`/api/admin/users?q=${encodeURIComponent($("#a-user-search").value.trim())}`);
+  $("#a-users-table tbody").replaceChildren(...users.map(u => {
+    const grant = el("input", { type: "number", min: "1", value: "100", "aria-label": "Pages to grant" });
+    const blocked = u.status === "blocked";
+    return el("tr", {},
+      el("td", {}, el("div", { class: "user-cell" },
+        u.picture ? el("img", { src: u.picture, alt: "", referrerpolicy: "no-referrer" }) : null,
+        el("div", {}, el("div", {}, el("bdi", {}, u.name || "-"), " ", u.role === "admin" ? el("span", { class: "pill admin" }, "admin") : null),
+          el("div", { class: "email" }, u.email)))),
+      el("td", {}, countryName(u.last_country || "unknown")),
+      el("td", { class: "num" }, u.last_login ? fmtTime(u.last_login) : "-"),
+      el("td", { class: "num" }, fmtNum(u.books)),
+      el("td", { class: "num" }, fmtNum(u.pages_month)),
+      el("td", { class: "num", title: `${u.balance.free_left} free + ${u.balance.paid} paid` }, fmtNum(u.balance.available)),
+      el("td", { class: "num" }, fmtBytes(u.storage)),
+      el("td", {}, el("span", { class: `pill ${blocked ? "blocked" : "ok"}` }, blocked ? "blocked" : "active")),
+      el("td", {}, el("div", { class: "row-actions" },
+        grant,
+        el("button", { type: "button", onclick: () => userAction(u, "grant", { pages: Number(grant.value) }) }, "Grant pages"),
+        u.id === ME?.id ? null : el("button", { type: "button", class: blocked ? "" : "danger",
+          onclick: () => (blocked || confirm(`Block ${u.email}? They will be signed out at once.`)) && userAction(u, blocked ? "unblock" : "block") },
+        blocked ? "Unblock" : "Block"))),
+    );
+  }));
+}
+
+async function userAction(user, action, body = null) {
+  try {
+    await api(`/api/admin/users/${user.id}/${action}`, body
+      ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+      : { method: "POST" });
+    await loadUsers();
+  } catch (err) { alert(err.message); }
+}
+
+/* ---- sign-ins, audit, jobs ---- */
+
+async function loadSignins() {
+  const rows = await api("/api/admin/signins");
+  $("#a-signins-table tbody").replaceChildren(...rows.map(r => el("tr", {},
+    el("td", { class: "num" }, fmtTime(r.ts)),
+    el("td", {}, r.email || "-"),
+    el("td", { class: "num" }, r.ip || "-"),
+    el("td", {}, countryName(r.country || "unknown")),
+    el("td", { title: r.user_agent }, browserOf(r.user_agent)),
+    el("td", {}, el("span", { class: `pill ${r.outcome}` }, r.outcome === "ok" ? "signed in" : r.details?.reason || r.outcome)),
+  )));
+}
+
+$("#a-audit-action").addEventListener("change", () => { auditBefore = null; loadAudit(false); });
+$("#a-audit-outcome").addEventListener("change", () => { auditBefore = null; loadAudit(false); });
+$("#a-audit-more").addEventListener("click", () => loadAudit(true));
+$("#a-verify").addEventListener("click", async () => {
+  const out = $("#a-verify-result");
+  out.textContent = "Checking…";
+  try {
+    const r = await api("/api/admin/audit/verify");
+    out.textContent = r.intact ? `✓ Intact: all ${fmtNum(r.entries)} entries verified` : "✗ The audit log was altered!";
+  } catch (err) { out.textContent = err.message; }
+});
+
+async function loadAudit(more) {
+  const q = new URLSearchParams({ action: $("#a-audit-action").value, outcome: $("#a-audit-outcome").value });
+  if (more && auditBefore) q.set("before", auditBefore);
+  const rows = await api(`/api/admin/audit?${q}`);
+  if (rows.length) auditBefore = rows[rows.length - 1].id;
+  const tbody = $("#a-audit-table tbody");
+  const trs = rows.map(r => el("tr", {},
+    el("td", { class: "num" }, fmtTime(r.ts)),
+    el("td", {}, r.action),
+    el("td", {}, el("span", { class: `pill ${r.outcome}` }, r.outcome)),
+    el("td", {}, r.email || "-"),
+    el("td", { class: "num" }, `${r.ip || "-"} ${r.country && r.country !== "unknown" ? r.country : ""}`.trim()),
+    el("td", { class: "details" }, r.target || ""),
+    el("td", { class: "details" }, Object.keys(r.details || {}).length ? JSON.stringify(r.details) : ""),
+  ));
+  if (more) tbody.append(...trs); else tbody.replaceChildren(...trs);
+  $("#a-audit-more").classList.toggle("hidden", rows.length < 200);
+}
+
+async function loadAdminJobs() {
+  const rows = await api("/api/admin/jobs");
+  $("#a-jobs-table tbody").replaceChildren(...rows.map(j => el("tr", {},
+    el("td", { class: "num" }, fmtTime(j.created)),
+    el("td", {}, j.email || "-"),
+    el("td", {}, j.kind.toUpperCase()),
+    el("td", {}, el("span", { class: `pill ${j.status === "failed" ? "failed" : j.status === "done" ? "ok" : ""}` }, STATUS[j.status] || j.status)),
+    el("td", { class: "num" }, j.pages ? fmtNum(j.pages) : "-"),
+    el("td", { class: "num" }, j.size ? fmtBytes(j.size) : "-"),
+    el("td", { class: "details" }, j.worker || ""),
+    el("td", { class: "details" }, j.error || ""),
+  )));
+}
+
 /* ---------------------------------------------------------------- start */
 
-loadInfo();
-refreshJobs();
+(async () => {
+  await loadInfo();
+  if (MODE === "server") {
+    try { await loadMe(); } catch { showSignIn(); return; }
+    history.replaceState(null, "", "/");
+  }
+  show("home");
+  refreshJobs();
+})();

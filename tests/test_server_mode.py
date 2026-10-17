@@ -220,7 +220,7 @@ def test_rate_limit(tmp_path: Path, monkeypatch):
 def test_quota_charge_refund_and_grant(tmp_path: Path):
     site = Site(tmp_path)
     user = site.db.upsert_google_user("s", "q@example.com", "Q", "", False, "", "")
-    quota = Quota(site.db, default_free_pages=10)
+    quota = Quota(site.db, Limits(free_pages_per_month=10))
     assert quota.balance(user["id"]).available == 10
     assert quota.charge(user["id"], "job1", 8)
     assert not quota.charge(user["id"], "job2", 5)  # only 2 left: nothing taken
@@ -379,3 +379,96 @@ def test_privacy_and_terms_are_public(tmp_path: Path):
     for path, heading in (("/privacy", "Privacy policy"), ("/terms", "Terms of service")):
         r = anon.get(path)
         assert r.status_code == 200 and heading in r.text
+
+
+# -- admins without limits, guests without an account ------------------------------------------------
+
+
+def guest_client(site: Site, ip: str = "203.0.113.50") -> TestClient:
+    c = TestClient(site.app, base_url=BASE, headers={"Origin": BASE, "CF-Connecting-IP": ip})
+    assert c.post("/auth/guest", json={}).status_code == 204
+    return c
+
+
+def test_admins_have_no_limits(tmp_path: Path, monkeypatch):
+    from pdf2epub.web import worker as worker_module
+
+    monkeypatch.setattr(worker_module, "prepare", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("stop here")))
+    site = Site(tmp_path, start_worker=True, free_pages_per_month=1, max_jobs_per_day=1, max_pdf_pages=1)
+    admin = site.client("admin@example.com")
+    me = admin.get("/api/me").json()
+    assert me["balance"]["unlimited"] and me["limits"] is None
+    jobs = [site.upload(admin, f"book{n}.pdf", make_pdf(3)).json() for n in range(3)]
+    assert all("id" in j for j in jobs)  # past the daily limit
+    done = wait_status(admin, jobs[0]["id"], {"failed"})
+    assert done["error"].startswith("The conversion failed")  # got past the page limit and the allowance
+    assert Quota(site.db, site.settings.limits).charge(admin.user["id"], "big", 100_000)
+
+
+def test_guests_share_a_pool_per_network(tmp_path: Path):
+    site = Site(tmp_path, guest_pages_per_month=5, guest_jobs_per_day=2, guests_per_day=2)
+    first = guest_client(site)
+    me = first.get("/api/me").json()
+    assert me["role"] == "guest" and me["email"] == "" and me["balance"]["available"] == 5
+    job = site.upload(first, "a.pdf", make_pdf(1)).json()
+    assert Quota(site.db, site.settings.limits).charge(me["id"], job["id"], 4, "203.0.113.50")
+    # a new private window on the same network starts a new library, but not a new allowance
+    second = guest_client(site)
+    assert second.get("/api/me").json()["balance"]["available"] == 1
+    assert second.get(f"/api/jobs/{job['id']}").status_code == 404  # still private
+    # other networks are not affected
+    assert guest_client(site, ip="198.51.100.20").get("/api/me").json()["balance"]["available"] == 5
+    # uploads per day are counted per network too
+    assert site.upload(second, "b.pdf", make_pdf(1)).status_code == 200
+    refused = site.upload(first, "c.pdf", make_pdf(1))
+    assert refused.status_code == 429 and "Sign in with Google" in refused.json()["detail"]
+    # and so are new guest libraries
+    third = TestClient(site.app, base_url=BASE, headers={"Origin": BASE, "CF-Connecting-IP": "203.0.113.50"})
+    assert third.post("/auth/guest", json={}).status_code == 429
+
+
+def test_an_ipv6_network_counts_as_one(tmp_path: Path):
+    from pdf2epub.web.security import network_of
+
+    assert network_of("2001:db8:1:2:aaaa::1") == network_of("2001:db8:1:2:bbbb::2") == "2001:db8:1:2::/64"
+    assert network_of("::ffff:198.51.100.7") == network_of("198.51.100.7") == "198.51.100.7"
+    assert network_of("not an address") == ""
+
+
+def test_guest_books_move_into_the_google_account(tmp_path: Path, monkeypatch):
+    site = Site(tmp_path)
+    guest = guest_client(site)
+    job = site.upload(guest, "a.pdf", make_pdf(1)).json()
+
+    async def fake_token(self, request, **kw):  # noqa: ARG001
+        return {"userinfo": {"sub": "g-77", "email": "new@example.com", "email_verified": True, "name": "New"}}
+
+    from authlib.integrations.starlette_client import StarletteOAuth2App
+
+    monkeypatch.setattr(StarletteOAuth2App, "authorize_access_token", fake_token)
+    assert guest.get("/auth/callback", follow_redirects=False).status_code == 303
+    me = guest.get("/api/me").json()
+    assert me["email"] == "new@example.com" and me["role"] == "user"
+    assert [j["id"] for j in guest.get("/api/jobs").json()] == [job["id"]]
+    assert ("auth.guest_merged", "ok") in [(r["action"], r["outcome"]) for r in site.db.audit_rows()]
+
+
+def test_guest_bot_check_and_switch(tmp_path: Path, monkeypatch):
+    import dataclasses
+
+    from pdf2epub.web.auth import Auth
+
+    settings = dataclasses.replace(settings_for(tmp_path), turnstile_site_key="site-key", turnstile_secret="secret")
+    c = TestClient(create_app(settings=settings, start_worker=False), base_url=BASE, headers={"Origin": BASE})
+    assert c.get("/api/info").json()["turnstile"] == "site-key"
+    assert c.post("/auth/guest", json={"turnstile": ""}).status_code == 403
+
+    async def verified(self, token, ip):  # noqa: ARG001
+        return token == "good"
+
+    monkeypatch.setattr(Auth, "_turnstile_ok", verified)
+    assert c.post("/auth/guest", json={"turnstile": "good"}).status_code == 204
+    assert c.get("/api/me").json()["role"] == "guest"
+    closed = dataclasses.replace(settings_for(tmp_path / "closed"), allow_guests=False)
+    c = TestClient(create_app(settings=closed, start_worker=False), base_url=BASE, headers={"Origin": BASE})
+    assert c.post("/auth/guest", json={}).status_code == 403

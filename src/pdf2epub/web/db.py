@@ -123,7 +123,17 @@ CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit BEGIN SELECT
 CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;
 """
 
-MIGRATIONS = [_V1, _V2]
+# Guests (users without a Google account, role 'guest') are counted by network: the job and the page ledger
+# remember the network the upload came from.
+_V3 = """
+ALTER TABLE jobs ADD COLUMN ip TEXT NOT NULL DEFAULT '';
+ALTER TABLE usage ADD COLUMN ip TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS jobs_ip ON jobs (ip, created);
+CREATE INDEX IF NOT EXISTS usage_ip ON usage (ip, created);
+CREATE INDEX IF NOT EXISTS users_guest_ip ON users (role, last_ip, created);
+"""
+
+MIGRATIONS = [_V1, _V2, _V3]
 
 _JSON_FIELDS = ("options", "summary", "report", "edits", "log", "details")
 _AUDIT_FIELDS = ("ts", "user_id", "email", "ip", "country", "user_agent", "action", "target", "outcome", "details", "prev_hash")
@@ -286,6 +296,22 @@ class Database:
                 )
         return self.user(user_id)
 
+    def create_guest(self, network: str, country: str) -> dict[str, Any]:
+        user_id = uuid.uuid4().hex
+        now = time.time()
+        self.execute(
+            "INSERT INTO users (id, google_sub, name, role, created, last_login, last_ip, last_country) VALUES (?,?,?,?,?,?,?,?)",
+            (user_id, None, "Guest", "guest", now, now, network, country),
+        )
+        return self.user(user_id)
+
+    def guests_created_since(self, network: str, since: float) -> int:
+        return self.one("SELECT COUNT(*) AS n FROM users WHERE role='guest' AND last_ip=? AND created>=?", (network, since))["n"]
+
+    def move_books(self, from_user: str, to_user: str) -> int:
+        """Hand a guest's books to the account they signed in with."""
+        return self.execute("UPDATE jobs SET owner_id=? WHERE owner_id=?", (to_user, from_user)).rowcount
+
     def set_user(self, user_id: str, **fields: Any) -> None:
         sets = ", ".join(f"{k}=:{k}" for k in fields)
         self.execute(f"UPDATE users SET {sets} WHERE id=:_id", {**fields, "_id": user_id})
@@ -315,11 +341,21 @@ class Database:
 
     # -- page ledger ---------------------------------------------------------------------------------------
 
-    def add_usage(self, user_id: str, kind: str, bucket: str, pages: int, job_id: str | None = None, note: str = "") -> None:
+    def add_usage(self, user_id: str, kind: str, bucket: str, pages: int, job_id: str | None = None, note: str = "", ip: str = "") -> None:
         self.execute(
-            "INSERT INTO usage (user_id, job_id, kind, bucket, pages, created, note) VALUES (?,?,?,?,?,?,?)",
-            (user_id, job_id, kind, bucket, pages, time.time(), note),
+            "INSERT INTO usage (user_id, job_id, kind, bucket, pages, created, note, ip) VALUES (?,?,?,?,?,?,?,?)",
+            (user_id, job_id, kind, bucket, pages, time.time(), note, ip),
         )
+
+    def guest_pages_since(self, network: str, since: float) -> int:
+        """Pages all guests from one network converted since `since` (charges minus refunds)."""
+        row = self.one(
+            "SELECT COALESCE(SUM(CASE g.kind WHEN 'charge' THEN g.pages WHEN 'refund' THEN -g.pages ELSE 0 END), 0) AS n"
+            " FROM usage g JOIN users u ON u.id=g.user_id WHERE u.role='guest' AND g.job_id IN"
+            " (SELECT job_id FROM usage WHERE ip=? AND kind='charge' AND created>=?)",
+            (network, since),
+        )
+        return max(int(row["n"]), 0)
 
     def usage_rows(self, user_id: str, since: float = 0.0) -> list[dict[str, Any]]:
         return self.query("SELECT * FROM usage WHERE user_id=? AND created>=? ORDER BY id", (user_id, since))

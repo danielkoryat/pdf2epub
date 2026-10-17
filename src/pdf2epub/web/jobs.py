@@ -66,6 +66,7 @@ class Job:
     attempts: int = 0
     pages: int = 0
     size: int = 0
+    ip: str = ""  # the network the upload came from (server mode; guests are counted by it)
 
     @classmethod
     def from_row(cls, row: dict) -> "Job":
@@ -79,7 +80,7 @@ class Job:
         data["stage_label"] = STAGE_LABELS.get(self.stage, self.stage)
         data["log"] = self.log[-8:]
         data["queue_position"] = queue_position
-        for private in ("worker", "attempts", "owner_id"):
+        for private in ("worker", "attempts", "owner_id", "ip"):
             data.pop(private)
         return data
 
@@ -163,9 +164,9 @@ class Library:
     def queue_position(self, job: Job) -> int:
         return self.db.queue_position(job.id) if job.status == "queued" else 0
 
-    def create(self, owner_id: str, filename: str, options: dict, review: bool, kind: str) -> Job:
+    def create(self, owner_id: str, filename: str, options: dict, review: bool, kind: str, ip: str = "") -> Job:
         job = Job(id=uuid.uuid4().hex[:16], filename=filename, created=time.time(), options=options,
-                  review=review, kind=kind, owner_id=owner_id)
+                  review=review, kind=kind, owner_id=owner_id, ip=ip)
         job.title = options.get("title") or Path(filename).stem.replace("_", " ")
         self.dir(job.id).mkdir(parents=True)
         return job
@@ -198,6 +199,13 @@ class Library:
 
     def jobs_since(self, owner_id: str, since: float) -> int:
         return self.db.one("SELECT COUNT(*) AS n FROM jobs WHERE owner_id=? AND created>=?", (owner_id, since))["n"]
+
+    def guest_jobs_since(self, network: str, since: float) -> int:
+        """Uploads by all guests from one network."""
+        return self.db.one(
+            "SELECT COUNT(*) AS n FROM jobs j JOIN users u ON u.id=j.owner_id WHERE u.role='guest' AND j.ip=? AND j.created>=?",
+            (network, since),
+        )["n"]
 
     def waiting(self, owner_id: str) -> int:
         return self.db.one(

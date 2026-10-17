@@ -4,6 +4,10 @@ Authlib validates Google's ID token (signature, issuer, audience, expiry, nonce)
 are accepted. A session is a random token in an HttpOnly, SameSite=Lax cookie (Secure and __Host- prefixed over
 HTTPS); the database stores only its SHA-256, and sessions can be revoked (sign-out, a blocked user).
 In local mode there is no sign-in: every request belongs to the built-in local user, who is an admin.
+
+Guests can use the site without an account: "try without signing in" creates a guest user with its own session
+cookie (after a Cloudflare Turnstile bot check, when configured). Signing in with Google later moves the guest's
+books into the account.
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 
 from .db import Database
-from .security import Client, RateLimiter, client_of
+from .security import Client, RateLimiter, client_of, network_of
 from .settings import Settings
 
 LOCAL_USER: dict[str, Any] = {
@@ -126,12 +130,60 @@ class Auth:
         if user["status"] != "active":
             self.audit(request, user, "auth.login", "denied", reason="blocked")
             return RedirectResponse("/?signin=blocked", status_code=303)
+        guest = self.optional_user(request)
+        if guest is not None and guest["role"] == "guest":
+            moved = self.db.move_books(guest["id"], user["id"])
+            self.db.revoke_session(guest["token"])
+            self.audit(request, user, "auth.guest_merged", target=guest["id"], books=moved)
         session_token = secrets.token_urlsafe(32)
         self.db.create_session(session_token, user["id"], self.settings.session_days, c.ip, c.country, c.user_agent)
         self.audit(request, user, "auth.login")
         response = RedirectResponse("/", status_code=303)
         self._set_cookie(response, session_token)
         return response
+
+    async def start_guest(self, request: Request, turnstile_token: str) -> Response:
+        """A guest library for this browser. Limited per network: a few new ones a day, and a bot check."""
+        if not self.settings.allow_guests:
+            raise HTTPException(403, "Please sign in with Google")
+        current = self.optional_user(request)
+        if current is not None:
+            return Response(status_code=204)
+        c = self.client(request)
+        network = network_of(c.ip)
+        ok, _wait = self.limiter.allow("guest", network or c.ip)
+        if not ok:
+            self.audit(request, None, "auth.guest", "denied", reason="rate")
+            raise HTTPException(429, "Too many attempts, try again later")
+        if self.settings.turnstile_secret and not await self._turnstile_ok(turnstile_token, c.ip):
+            self.audit(request, None, "auth.guest", "denied", reason="bot check")
+            raise HTTPException(403, "The browser check failed. Please try again, or sign in with Google.")
+        today = time.time() - 86400
+        if self.db.guests_created_since(network, today) >= self.settings.limits.guests_per_day:
+            self.audit(request, None, "auth.guest", "denied", reason="guests per day")
+            raise HTTPException(429, "Too many guest libraries from your network today. Please sign in with Google to continue.")
+        user = self.db.create_guest(network, c.country)
+        session_token = secrets.token_urlsafe(32)
+        self.db.create_session(session_token, user["id"], self.settings.session_days, c.ip, c.country, c.user_agent)
+        self.audit(request, user, "auth.guest")
+        response = Response(status_code=204)
+        self._set_cookie(response, session_token)
+        return response
+
+    async def _turnstile_ok(self, token: str, ip: str) -> bool:
+        if not token or len(token) > 2048:
+            return False
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.post(
+                    "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+                    data={"secret": self.settings.turnstile_secret, "response": token, "remoteip": ip},
+                )
+            return bool(r.json().get("success"))
+        except (httpx.HTTPError, ValueError):
+            return False
 
     def logout(self, request: Request) -> Response:
         user = self.optional_user(request)

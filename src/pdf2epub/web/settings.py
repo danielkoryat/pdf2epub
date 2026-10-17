@@ -39,6 +39,12 @@ class Limits:
     job_timeout_minutes: int = 90
     max_epub_entries: int = 5000  # files inside an uploaded EPUB
     max_epub_unpacked_mb: int = 500  # total unpacked size of an uploaded EPUB
+    # Guests (no sign-in). Their allowance is counted per browser and per network address together, so a new
+    # private window does not mean new pages: all guests from one IPv4 address (or IPv6 /64) share the pool.
+    guest_pages_per_month: int = 60
+    guest_jobs_per_day: int = 3  # per network address
+    guest_max_storage_mb: int = 200
+    guests_per_day: int = 5  # new guest libraries per network address per day
 
     @classmethod
     def from_env(cls) -> "Limits":
@@ -61,6 +67,9 @@ class Settings:
     posthog_key: str = ""
     posthog_host: str = "https://eu.i.posthog.com"
     timezone: str = "UTC"  # what "today" means on the admin dashboard
+    allow_guests: bool = True  # server mode: people may convert without signing in, within the guest limits
+    turnstile_site_key: str = ""  # Cloudflare Turnstile: a bot check before a guest library is created
+    turnstile_secret: str = ""
     limits: Limits = field(default_factory=Limits)
 
     @property
@@ -93,6 +102,9 @@ class Settings:
             posthog_key=os.environ.get("PDF2EPUB_POSTHOG_KEY", ""),
             posthog_host=os.environ.get("PDF2EPUB_POSTHOG_HOST", "https://eu.i.posthog.com").rstrip("/"),
             timezone=os.environ.get("PDF2EPUB_TIMEZONE", "UTC"),
+            allow_guests=_bool("PDF2EPUB_ALLOW_GUESTS", True),
+            turnstile_site_key=os.environ.get("PDF2EPUB_TURNSTILE_SITE_KEY", "").strip(),
+            turnstile_secret=os.environ.get("PDF2EPUB_TURNSTILE_SECRET", "").strip(),
             limits=Limits.from_env(),
         )
         values.update(overrides)

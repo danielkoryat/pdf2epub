@@ -23,6 +23,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from .. import config
 from ..edit import chapter_preview, chapter_summaries
@@ -33,7 +34,7 @@ from .auth import Auth
 from .db import Database
 from .jobs import ACTIVE, Job, Library
 from .quota import Quota
-from .security import RateLimiter, SecurityMiddleware
+from .security import RateLimiter, SecurityMiddleware, network_of
 from .settings import Settings
 from .uploads import UploadRejected, check_epub, check_image, safe_filename, sniff
 
@@ -47,6 +48,10 @@ RESERVED_PORTS = set(range(3000, 3005)) | set(range(8000, 8021))
 CHUNK = 1024 * 1024
 
 
+class GuestBody(BaseModel):
+    turnstile: str = Field(default="", max_length=2048)  # the Cloudflare Turnstile token, when the check is on
+
+
 def create_app(data_dir: Path | None = None, settings: Settings | None = None, start_worker: bool | None = None) -> FastAPI:
     if settings is None:
         settings = Settings.from_env(**({"data_dir": Path(data_dir)} if data_dir is not None else {}))
@@ -54,7 +59,7 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
     library = Library(settings.data_dir, db, allow_pickle=not settings.server)
     limiter = RateLimiter()
     auth = Auth(settings, db, limiter)
-    quota = Quota(db, settings.limits.free_pages_per_month)
+    quota = Quota(db, settings.limits)
     limits = settings.limits
 
     app = FastAPI(title="pdf2epub", docs_url=None, redoc_url=None, openapi_url=None)
@@ -130,6 +135,13 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
             return RedirectResponse("/")
         return await auth.callback(request)
 
+    @app.post("/auth/guest")
+    async def guest(request: Request, body: GuestBody) -> Response:
+        """Use the site without signing in (server mode)."""
+        if not settings.server:
+            return Response(status_code=204)
+        return await auth.start_guest(request, body.turnstile)
+
     @app.post("/auth/logout")
     def logout(request: Request) -> Response:
         return auth.logout(request)
@@ -142,26 +154,40 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
         except RuntimeError:
             tesseract = False
         data: dict[str, Any] = {"mode": settings.mode, "tesseract": tesseract, "epubcheck": epubcheck_available()}
+        if settings.server:
+            data["guests"] = settings.allow_guests
+            data["turnstile"] = settings.turnstile_site_key if settings.turnstile_secret else ""
         if settings.posthog_key:
             data["posthog"] = {"key": settings.posthog_key, "host": settings.posthog_host}
         return data
+
+    def network(request: Request) -> str:
+        return network_of(auth.client(request).ip)
+
+    def limits_for(user: dict) -> dict[str, int] | None:
+        """The upload limits that apply to this user; None for admins, who have none (besides the file size)."""
+        if user["role"] == "admin":
+            return None
+        guest = user["role"] == "guest"
+        return {
+            "max_upload_mb": limits.max_upload_mb, "max_pdf_pages": limits.max_pdf_pages,
+            "max_jobs_per_day": limits.guest_jobs_per_day if guest else limits.max_jobs_per_day,
+            "max_waiting_jobs": limits.max_waiting_jobs,
+            "max_storage_mb": limits.guest_max_storage_mb if guest else limits.max_storage_mb,
+        }
 
     @app.get("/api/me")
     def me(request: Request, user: dict = Depends(reader)) -> dict:
         data = {k: user[k] for k in ("id", "email", "name", "picture", "role")}
         if settings.server:
             today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-            data["balance"] = quota.balance(user["id"]).as_dict()
+            data["balance"] = quota.balance(user["id"], network(request)).as_dict()
             data["usage"] = {
                 "storage_bytes": library.storage_used(user["id"]),
                 "books_today": library.jobs_since(user["id"], today),
                 "waiting": library.waiting(user["id"]),
             }
-            data["limits"] = {
-                "max_upload_mb": limits.max_upload_mb, "max_pdf_pages": limits.max_pdf_pages,
-                "max_jobs_per_day": limits.max_jobs_per_day, "max_waiting_jobs": limits.max_waiting_jobs,
-                "max_storage_mb": limits.max_storage_mb,
-            }
+            data["limits"] = limits_for(user)
         return data
 
     # -- the library ---------------------------------------------------------------------------------------
@@ -197,15 +223,20 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
         if language and not re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*", language):
             raise HTTPException(400, "Language must be a code like he, en or pt-BR")
         max_bytes = (limits.max_upload_mb if settings.server else 2048) * CHUNK
-        if settings.server:
-            if library.waiting(user["id"]) >= limits.max_waiting_jobs:
-                raise reject(429, f"You already have {limits.max_waiting_jobs} books waiting or converting. Please wait for them to finish.", "waiting")
+        net = network(request) if settings.server else ""
+        own = limits_for(user) if settings.server else None
+        if own is not None:
+            guest = user["role"] == "guest"
+            more = " Sign in with Google for more." if guest else ""
+            if library.waiting(user["id"]) >= own["max_waiting_jobs"]:
+                raise reject(429, f"You already have {own['max_waiting_jobs']} books waiting or converting. Please wait for them to finish.", "waiting")
             since = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-            if library.jobs_since(user["id"], since) >= limits.max_jobs_per_day:
-                raise reject(429, f"You reached today's limit of {limits.max_jobs_per_day} books. Please come back tomorrow.", "daily")
-            room = limits.max_storage_mb * CHUNK - library.storage_used(user["id"])
+            today_count = library.guest_jobs_since(net, since) if guest else library.jobs_since(user["id"], since)
+            if today_count >= own["max_jobs_per_day"]:
+                raise reject(429, f"You reached today's limit of {own['max_jobs_per_day']} books. Please come back tomorrow.{more}", "daily")
+            room = own["max_storage_mb"] * CHUNK - library.storage_used(user["id"])
             if room <= 0:
-                raise reject(413, "Your storage is full. Delete some books to make room.", "storage")
+                raise reject(413, f"Your storage is full. Delete some books to make room.{more}", "storage")
             max_bytes = min(max_bytes, room)
         first = await file.read(CHUNK)
         if not first:
@@ -214,11 +245,13 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
             kind = sniff(first, name)
         except UploadRejected as exc:
             raise reject(400, str(exc), "type") from None
-        if settings.server and kind == "pdf" and quota.balance(user["id"]).available <= 0:
-            raise reject(402, "You have no pages left this month. More pages will be available to buy soon.", "quota")
+        if settings.server and kind == "pdf" and quota.balance(user["id"], net).available <= 0:
+            message = ("You have used this month's free pages for guests. Sign in with Google to get more."
+                       if user["role"] == "guest" else "You have no pages left this month. More pages will be available to buy soon.")
+            raise reject(402, message, "quota")
         options = {"title": title.strip(), "author": author.strip(), "language": language.strip(),
                    "ocr": ocr, "ocr_lang": ocr_lang.strip(), "cover": cover}
-        job = library.create(user["id"], name, options, review, kind)
+        job = library.create(user["id"], name, options, review, kind, ip=net)
         size = 0
         try:
             with open(library.input_path(job), "wb") as fh:

@@ -45,6 +45,20 @@ def client_of(request: Request, settings: Settings) -> Client:
     return Client(ip=ip, country=country, user_agent=request.headers.get("user-agent", "")[:300])
 
 
+def network_of(ip: str) -> str:
+    """The network a guest is counted by: the IPv4 address itself, or the /64 an IPv6 address belongs to (one
+    home or phone gets a whole /64 and may pick a new address in it at any time)."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ""
+    if addr.version == 6:
+        if addr.ipv4_mapped:
+            return str(addr.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{addr}/64", strict=False))
+    return str(addr)
+
+
 class RateLimiter:
     """Sliding-window limits per key (an IP address or a user), kept in memory: the web app runs as one process."""
 
@@ -56,6 +70,7 @@ class RateLimiter:
         "download": (60, 600),   # EPUB downloads per user
         "read": (600, 60),       # reads (polling the library) per user
         "anonymous": (120, 60),  # requests per IP before signing in
+        "guest": (10, 3600),     # attempts to start a guest library per network
     }
 
     def __init__(self) -> None:
@@ -85,12 +100,16 @@ def content_security_policy(settings: Settings) -> str:
         api = settings.posthog_host
         assets = api.replace(".i.posthog.com", "-assets.i.posthog.com")
         posthog = f" {api} {assets}"
+    # Cloudflare Turnstile (the guest bot check) runs a script and an iframe from its own host.
+    turnstile = " https://challenges.cloudflare.com" if settings.turnstile_secret else ""
+    frames = turnstile.strip() or "'none'"
     return (
         "default-src 'self'; "
-        f"script-src 'self'{posthog}; "
+        f"script-src 'self'{posthog}{turnstile}; "
         "style-src 'self' 'unsafe-inline'; "  # style attributes set by the page's own script
         "img-src 'self' data: blob: https://*.googleusercontent.com; "
-        f"connect-src 'self'{posthog}; "
+        f"connect-src 'self'{posthog}{turnstile}; "
+        f"frame-src {frames}; "
         "font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://accounts.google.com"
     )
 

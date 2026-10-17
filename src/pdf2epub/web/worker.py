@@ -99,7 +99,7 @@ def run_action(settings: Settings, db: Database, library: Library, job_id: str) 
     reporter = _Reporter(db, job)
     handler = _LogHandler(reporter)
     logging.getLogger().addHandler(handler)
-    quota = Quota(db, settings.limits.free_pages_per_month)
+    quota = Quota(db, settings.limits)
     try:
         if job.kind == "epub":
             _prepare_epub(library, db, job, reporter) if action == "prepare" else _build_epub(library, db, job, reporter, job.edits or {})
@@ -125,7 +125,7 @@ def fail_job(db: Database, settings: Settings, job_id: str, message: str) -> Non
         return
     db.update_job(job_id, status="failed", pending=None, error=message)
     if row["kind"] == "pdf" and row["pending"] == "prepare" and settings.server:
-        Quota(db, settings.limits.free_pages_per_month).refund(row["owner_id"], job_id)
+        Quota(db, settings.limits).refund(row["owner_id"], job_id)
 
 
 def _finish_prepare(library: Library, db: Database, job: Job, **fields) -> None:
@@ -150,11 +150,14 @@ def _prepare_pdf(settings: Settings, library: Library, db: Database, quota: Quot
         raise JobFailed("The file could not be opened as a PDF") from None
     limits = settings.limits
     if settings.server:
-        if pages > limits.max_pdf_pages:
+        role = (db.user(job.owner_id) or {}).get("role")
+        if pages > limits.max_pdf_pages and role != "admin":
             raise JobFailed(f"The PDF has {pages} pages; the limit is {limits.max_pdf_pages}")
-        if not quota.charge(job.owner_id, job.id, pages):
-            left = quota.balance(job.owner_id).available
-            raise JobFailed(f"This book has {pages} pages but you have {left} pages left. More pages will be available to buy soon.")
+        if not quota.charge(job.owner_id, job.id, pages, job.ip):
+            left = quota.balance(job.owner_id, job.ip).available
+            more = ("Sign in with Google to get more pages." if role == "guest"
+                    else "More pages will be available to buy soon.")
+            raise JobFailed(f"This book has {pages} pages but you have {left} pages left. {more}")
     db.update_job(job.id, pages=pages)
     o = job.options
     opts = Options(

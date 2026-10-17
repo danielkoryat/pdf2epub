@@ -104,11 +104,26 @@ The database holds the users, books, page ledger and audit log. A consistent cop
 docker compose exec web pdf2epub-backup --keep 14     # writes /data/backups/pdf2epub-<time>.db.gz
 ```
 
-Run it daily from cron (`crontab -e`):
+Run it daily with a systemd timer (`/etc/systemd/system/pdf2epub-backup.service` and `.timer`):
 
+```ini
+# pdf2epub-backup.service
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/pdf2epub/deploy
+ExecStart=/usr/bin/docker compose exec -T web pdf2epub-backup --keep 14
+
+# pdf2epub-backup.timer
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
 ```
-30 3 * * * cd /opt/pdf2epub/deploy && docker compose exec -T web pdf2epub-backup --keep 14 >/dev/null
-```
+
+Then `sudo systemctl enable --now pdf2epub-backup.timer`.
 
 The books' files are in the same volume (`/data/jobs`). Copy the volume off the server regularly, for example
 with Oracle Cloud's scheduled boot-volume backups, or `rclone` to object storage. A backup that lives only on
@@ -130,7 +145,25 @@ All limits are environment variables in `settings.env` (`PDF2EPUB_<NAME>`). The 
 | `MAX_EPUB_ENTRIES` | 5000 | files inside an uploaded EPUB |
 | `MAX_EPUB_UNPACKED_MB` | 500 | total unpacked size of an uploaded EPUB |
 
-Request rate limits (sign-in, uploads, other writes, downloads, reads) are built in.
+Request rate limits (sign-in, uploads, other writes, downloads, reads) are built in. Admins have no page,
+upload-count or storage limits (only the upload size).
+
+### Guests
+
+Unless `PDF2EPUB_ALLOW_GUESTS=false`, people can convert without signing in. "Try it without signing in"
+creates a guest library tied to a cookie. Guests are counted per browser **and** per network (the IPv4 address,
+or the /64 of an IPv6 address), so a private window or cleared cookies don't bring new pages:
+
+| Setting | Default | |
+|---|---|---|
+| `GUEST_PAGES_PER_MONTH` | 60 | free pages per month, for one guest and for all guests of a network together |
+| `GUEST_JOBS_PER_DAY` | 3 | uploads per network per day |
+| `GUEST_MAX_STORAGE_MB` | 200 | per guest library |
+| `GUESTS_PER_DAY` | 5 | new guest libraries per network per day |
+
+With `PDF2EPUB_TURNSTILE_SITE_KEY` and `PDF2EPUB_TURNSTILE_SECRET` set (Cloudflare dashboard → Turnstile → Add
+widget), a browser check runs before a guest library is created. When a guest signs in with Google, their
+books move into the account.
 
 ## Security notes
 

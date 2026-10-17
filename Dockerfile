@@ -33,7 +33,12 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-edi
 # Tesseract languages to include. Scanned books in other languages fail with a clear message (no network).
 ARG TESSERACT_LANGS=heb,eng,yid,ara,fas,rus,ukr,fra,deu,spa,ita,por,nld,pol
 COPY docker/warmup.py /tmp/warmup.py
-RUN python /tmp/warmup.py "$TESSERACT_LANGS" && rm -rf /tmp/* /app/models/hf/xet
+# The models download into a build cache that survives code changes, then are copied into the image.
+RUN --mount=type=cache,target=/cache,sharing=locked \
+    HF_HOME=/cache/hf PDF2EPUB_TESSDATA=/cache/tessdata python /tmp/warmup.py "$TESSERACT_LANGS" \
+    && mkdir -p /app/models && rm -rf /app/models/hf /app/models/tessdata \
+    && cp -a /cache/hf /app/models/hf && cp -a /cache/tessdata /app/models/tessdata \
+    && rm -rf /tmp/* /app/models/hf/xet
 # Some downloads are private to root (mode 600); the app runs as an unprivileged user and only reads them.
 RUN chmod -R a+rX,go-w /app
 

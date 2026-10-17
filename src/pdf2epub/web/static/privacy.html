@@ -24,6 +24,10 @@
     <ul>
       <li><strong>Your Google account basics</strong>, when you sign in with Google: your name, e-mail address and
         profile picture. We never see your Google password and ask for no other access to your Google account.</li>
+      <li><strong>Without signing in</strong> (as a guest), your library is tied to a cookie in your browser. The
+        free pages for guests are shared by everyone on the same network, so we keep the network address each
+        upload came from (an IPv4 address, or the network part of an IPv6 address) to count them. Before a guest
+        library is created, Cloudflare Turnstile checks that the browser is not a bot.</li>
       <li><strong>The files you upload and the books we make from them</strong>, with the details you edit (title,
         author, chapters).</li>
       <li><strong>Usage</strong>: how many pages you converted and when, for the monthly page allowance.</li>
@@ -47,18 +51,20 @@
       <li>Files and the database are stored on a server at Oracle Cloud in Toronto, Canada.</li>
       <li>Cloudflare carries the traffic to the site and protects it against attacks.</li>
       <li>Google handles the sign-in.</li>
+      <li>Cloudflare Turnstile runs the browser check for guests.</li>
       <li>PostHog (EU) receives the product analytics described above, when they are enabled.</li>
     </ul>
 
     <h2>Cookies</h2>
-    <p>One cookie keeps you signed in. It is required for the site to work. When product analytics are enabled,
+    <p>One cookie keeps you signed in, or keeps your guest library. It is required for the site to work. When product analytics are enabled,
       PostHog sets its own cookie to tell visits apart.</p>
 
     <h2>How long we keep it</h2>
     <p>Your books stay in your library until you delete them; deleting a book removes its files from the server.
       Your account stays until you ask us to delete it. Then we delete your profile, your books and their files.
       Security records are kept to protect the service. They cannot be changed after they are written, so they stay
-      after an account is deleted. Database backups are kept for up to 14 days.</p>
+      after an account is deleted. Database backups are kept for up to 14 days. When a guest signs in with Google,
+      the guest library's books move into the account.</p>
 
     <h2>Your rights</h2>
     <p>You can ask for a copy of your information, ask us to correct it, or ask us to delete your account. Write to

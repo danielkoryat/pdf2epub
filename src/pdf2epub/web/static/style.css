@@ -298,3 +298,10 @@ a.brand { color: inherit; text-decoration: none; }
 .legal h1 { margin-bottom: 4px; }
 .legal h2 { font-size: 18px; margin-top: 28px; }
 .legal li { margin-bottom: 6px; }
+
+/* Guests */
+.guest-box { margin-top: 8px; }
+.guest-box .or { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 13px; margin: 14px 0; }
+.guest-box .or::before, .guest-box .or::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+.turnstile { display: flex; justify-content: center; margin-top: 12px; }
+.turnstile:empty { display: none; }

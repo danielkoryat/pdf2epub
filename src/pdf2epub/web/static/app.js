@@ -16,6 +16,7 @@ const el = (tag, attrs = {}, ...children) => {
 
 let MODE = "local";
 let ME = null;
+let INFO = {};
 
 async function api(path, options = {}) {
   const res = await fetch(path, { credentials: "same-origin", ...options });
@@ -70,7 +71,58 @@ function showSignIn() {
   const msg = $("#signin-msg");
   msg.textContent = messages[reason] || "";
   msg.classList.toggle("hidden", !messages[reason]);
+  $("#guest-box").classList.toggle("hidden", !INFO.guests);
 }
+
+/* Guests: a library for this browser without signing in, after Cloudflare's bot check when it is on. */
+
+function signinError(text) {
+  const msg = $("#signin-msg");
+  msg.textContent = text;
+  msg.classList.remove("hidden");
+}
+
+async function startGuest(token = "") {
+  try {
+    await api("/auth/guest", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ turnstile: token }) });
+  } catch (err) {
+    signinError(err.message);
+    $("#guest-start").disabled = false;
+    return;
+  }
+  track("guest_started");
+  await loadMe();
+  show("home");
+  refreshJobs();
+}
+
+function loadTurnstile() {
+  return new Promise((resolve, reject) => {
+    if (window.turnstile) return resolve(window.turnstile);
+    const script = el("script", { src: "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit", async: true });
+    script.addEventListener("load", () => resolve(window.turnstile));
+    script.addEventListener("error", () => reject(new Error("The browser check could not load. Please sign in with Google instead.")));
+    document.head.append(script);
+  });
+}
+
+$("#guest-start").addEventListener("click", async () => {
+  $("#guest-start").disabled = true;
+  $("#signin-msg").classList.add("hidden");
+  if (!INFO.turnstile) { startGuest(); return; }
+  try {
+    const turnstile = await loadTurnstile();
+    turnstile.render("#turnstile", {
+      sitekey: INFO.turnstile,
+      theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
+      callback: token => startGuest(token),
+      "error-callback": () => { signinError("The browser check failed. Please try again."); $("#guest-start").disabled = false; },
+    });
+  } catch (err) {
+    signinError(err.message);
+    $("#guest-start").disabled = false;
+  }
+});
 
 async function loadMe() {
   ME = await api("/api/me");
@@ -83,6 +135,24 @@ function renderAccount() {
   const box = $("#account");
   if (MODE !== "server" || !ME) { box.replaceChildren(); return; }
   const b = ME.balance;
+  if (ME.role === "guest") {
+    box.replaceChildren(
+      el("div", { class: "who" }, el("span", {}, "Guest"),
+        el("span", { class: "muted", title: "Free pages for guests this month" }, `${b.available.toLocaleString()} pages left`)),
+      el("a", { class: "button", href: "/auth/login", title: "Keep your books and get more pages" },
+        el("button", { type: "button", class: "primary" }, "Sign in with Google")),
+    );
+    return;
+  }
+  if (b.unlimited) {
+    box.replaceChildren(...[
+      ME.picture ? el("img", { class: "avatar", src: ME.picture, alt: "", referrerpolicy: "no-referrer" }) : null,
+      el("div", { class: "who" }, el("span", {}, ME.name || ME.email), el("span", { class: "muted" }, "Unlimited pages")),
+      ME.role === "admin" ? el("button", { type: "button", class: "ghost", onclick: openAdmin }, "Dashboard") : null,
+      el("button", { type: "button", class: "ghost", onclick: signOut }, "Sign out"),
+    ].filter(Boolean));
+    return;
+  }
   const total = b.free_allowance + b.paid;
   const pct = total ? Math.round((100 * b.available) / total) : 0;
   const pages = el("div", { class: "who" },
@@ -117,6 +187,7 @@ const ACTIVE = new Set(["queued", "preparing", "building"]);
 async function loadInfo() {
   try {
     const info = await api("/api/info");
+    INFO = info;
     MODE = info.mode;
     if (info.posthog) loadAnalytics(info.posthog);
     const chips = $("#chips");
@@ -877,13 +948,15 @@ async function loadUsers() {
     return el("tr", {},
       el("td", {}, el("div", { class: "user-cell" },
         u.picture ? el("img", { src: u.picture, alt: "", referrerpolicy: "no-referrer" }) : null,
-        el("div", {}, el("div", {}, el("bdi", {}, u.name || "-"), " ", u.role === "admin" ? el("span", { class: "pill admin" }, "admin") : null),
-          el("div", { class: "email" }, u.email)))),
+        el("div", {}, el("div", {}, el("bdi", {}, u.name || "-"), " ",
+          u.role === "admin" ? el("span", { class: "pill admin" }, "admin") : u.role === "guest" ? el("span", { class: "pill" }, "guest") : null),
+          el("div", { class: "email" }, u.email || (u.role === "guest" ? `no account · ${u.last_ip}` : ""))))),
       el("td", {}, countryName(u.last_country || "unknown")),
       el("td", { class: "num" }, u.last_login ? fmtTime(u.last_login) : "-"),
       el("td", { class: "num" }, fmtNum(u.books)),
       el("td", { class: "num" }, fmtNum(u.pages_month)),
-      el("td", { class: "num", title: `${u.balance.free_left} free + ${u.balance.paid} paid` }, fmtNum(u.balance.available)),
+      el("td", { class: "num", title: u.balance.unlimited ? "Admins have no page limit" : `${u.balance.free_left} free + ${u.balance.paid} paid` },
+        u.balance.unlimited ? "Unlimited" : fmtNum(u.balance.available)),
       el("td", { class: "num" }, fmtBytes(u.storage)),
       el("td", {}, el("span", { class: `pill ${blocked ? "blocked" : "ok"}` }, blocked ? "blocked" : "active")),
       el("td", {}, el("div", { class: "row-actions" },

@@ -6,7 +6,9 @@ import os
 import shutil
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# The folder that holds models/, tools/ and data/: the source checkout, or PDF2EPUB_HOME (the container image
+# installs the package into a virtual environment and keeps its models in /app).
+PROJECT_ROOT = Path(os.environ.get("PDF2EPUB_HOME") or Path(__file__).resolve().parents[2])
 
 _WINDOWS_TESSERACT = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 

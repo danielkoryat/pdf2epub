@@ -25,6 +25,7 @@ dependencies = [
 pdf2epub = "pdf2epub.cli:main"
 pdf2epub-web = "pdf2epub.web.server:main"
 pdf2epub-worker = "pdf2epub.web.worker:main"
+pdf2epub-backup = "pdf2epub.web.backup:main"
 
 [dependency-groups]
 dev = [
@@ -39,14 +40,26 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/pdf2epub"]
 
-# CUDA build of PyTorch on Windows/Linux so Docling's layout model runs on an NVIDIA GPU (macOS: regular wheels).
+# PyTorch: the CUDA build on Windows, so Docling's layout model runs on an NVIDIA GPU; the CPU build on Linux,
+# which is what the server image uses (small, and the same on x86 and ARM); regular wheels on macOS.
 [tool.uv.sources]
-torch = [{ index = "pytorch-cu126", marker = "sys_platform != 'darwin'" }]
-torchvision = [{ index = "pytorch-cu126", marker = "sys_platform != 'darwin'" }]
+torch = [
+    { index = "pytorch-cu126", marker = "sys_platform == 'win32'" },
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+    { index = "pytorch-cu126", marker = "sys_platform == 'win32'" },
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+]
 
 [[tool.uv.index]]
 name = "pytorch-cu126"
 url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.pytest.ini_options]

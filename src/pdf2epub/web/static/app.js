@@ -98,7 +98,8 @@ async function startGuest(token = "") {
 
 function loadTurnstile() {
   return new Promise((resolve, reject) => {
-    if (window.turnstile) return resolve(window.turnstile);
+    // (The widget's box must not have the id "turnstile": an element id would also appear as window.turnstile.)
+    if (window.turnstile?.render) return resolve(window.turnstile);
     const script = el("script", { src: "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit", async: true });
     script.addEventListener("load", () => resolve(window.turnstile));
     script.addEventListener("error", () => reject(new Error("The browser check could not load. Please sign in with Google instead.")));
@@ -106,13 +107,16 @@ function loadTurnstile() {
   });
 }
 
+let turnstileWidget = null;
+
 $("#guest-start").addEventListener("click", async () => {
   $("#guest-start").disabled = true;
   $("#signin-msg").classList.add("hidden");
   if (!INFO.turnstile) { startGuest(); return; }
   try {
     const turnstile = await loadTurnstile();
-    turnstile.render("#turnstile", {
+    if (turnstileWidget !== null) { turnstile.reset(turnstileWidget); return; } // a retry: check again
+    turnstileWidget = turnstile.render("#turnstile-box", {
       sitekey: INFO.turnstile,
       theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
       callback: token => startGuest(token),

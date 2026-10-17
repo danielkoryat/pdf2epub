@@ -291,3 +291,10 @@ table.data .bar-col { width: 45%; }
   .account .who { display: none; }
   .tile.hero .value { font-size: 36px; }
 }
+
+/* Privacy policy and terms */
+a.brand { color: inherit; text-decoration: none; }
+.legal { max-width: 720px; line-height: 1.6; }
+.legal h1 { margin-bottom: 4px; }
+.legal h2 { font-size: 18px; margin-top: 28px; }
+.legal li { margin-bottom: 6px; }

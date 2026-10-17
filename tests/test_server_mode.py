@@ -372,3 +372,10 @@ def test_backup_is_a_consistent_rotated_copy(tmp_path: Path):
     with sqlite3.connect(restored) as conn:
         assert conn.execute("SELECT email FROM users").fetchall() == [("reader@example.com",)]
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+def test_privacy_and_terms_are_public(tmp_path: Path):
+    anon = Site(tmp_path).client()
+    for path, heading in (("/privacy", "Privacy policy"), ("/terms", "Terms of service")):
+        r = anon.get(path)
+        assert r.status_code == 200 and heading in r.text

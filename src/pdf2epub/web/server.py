@@ -110,6 +110,14 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
     def index() -> FileResponse:
         return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
+    @app.get("/privacy")
+    def privacy() -> FileResponse:
+        return FileResponse(STATIC / "privacy.html", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/terms")
+    def terms() -> FileResponse:
+        return FileResponse(STATIC / "terms.html", headers={"Cache-Control": "no-cache"})
+
     @app.get("/auth/login")
     async def login(request: Request) -> Response:
         if not settings.server:

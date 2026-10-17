@@ -36,14 +36,14 @@ let analytics = null;
 
 function loadAnalytics(config) {
   // Loaded from PostHog's own host (allowed by the page's Content-Security-Policy); book titles and file names
-  // are never sent, only event names, kinds and sizes.
+  // are never sent, only event names, kinds and sizes. No screen recording (see the privacy policy).
   const assets = config.host.replace(".i.posthog.com", "-assets.i.posthog.com");
   const script = el("script", { src: `${assets}/static/array.js`, async: true });
   script.addEventListener("load", () => {
     if (!window.posthog) return;
     window.posthog.init(config.key, {
       api_host: config.host, person_profiles: "identified_only", capture_pageview: true,
-      autocapture: false, mask_all_text: false, session_recording: { maskAllInputs: true },
+      autocapture: false, disable_session_recording: true,
     });
     analytics = window.posthog;
     if (ME) analytics.identify(ME.id, { email: ME.email, name: ME.name });

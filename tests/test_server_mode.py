@@ -355,3 +355,20 @@ def test_job_processes_get_no_secrets(tmp_path: Path, monkeypatch):
     env = child_environment(settings_for(tmp_path))
     assert "do-not-leak" not in env.values()
     assert env["PDF2EPUB_MODE"] == "server" and env["PDF2EPUB_DATA"] == str(tmp_path)
+
+
+def test_backup_is_a_consistent_rotated_copy(tmp_path: Path):
+    import gzip
+
+    from pdf2epub.web.backup import backup
+
+    site = Site(tmp_path)
+    site.client("reader@example.com")
+    made = [backup(tmp_path, keep=2) for _ in range(3)]
+    kept = sorted((tmp_path / "backups").glob("*.db.gz"))
+    assert kept == sorted(made[1:])
+    restored = tmp_path / "restored.db"
+    restored.write_bytes(gzip.decompress(kept[-1].read_bytes()))
+    with sqlite3.connect(restored) as conn:
+        assert conn.execute("SELECT email FROM users").fetchall() == [("reader@example.com",)]
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

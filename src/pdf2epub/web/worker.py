@@ -18,6 +18,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -373,12 +374,24 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     _setup_logging()
     settings = Settings.from_env(web=False)
+    # Temporary files (page images for OCR, unpacked EPUBs) go to the data disk, not to a small in-memory /tmp.
+    # Each job's process and the Tesseract processes it starts inherit TMPDIR.
+    tmp = settings.data_dir / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    os.environ["TMPDIR"] = str(tmp)
+    tempfile.tempdir = str(tmp)
     db = Database(settings.data_dir / "pdf2epub.db")
     library = Library(settings.data_dir, db, allow_pickle=not settings.server)
     if args.run_job:
         run_action(settings, db, library, args.run_job)
         return 0
     worker = Worker(settings, db, library, isolate=not args.in_process)
+    if os.name == "posix":
+        import signal
+
+        # `docker stop` sends SIGTERM: finish the loop like Ctrl+C. A job that is running is picked up again
+        # once its heartbeat goes stale.
+        signal.signal(signal.SIGTERM, lambda *_: worker.stop.set())
     try:
         worker.run()
     except KeyboardInterrupt:

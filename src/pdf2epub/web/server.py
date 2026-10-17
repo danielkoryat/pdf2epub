@@ -9,6 +9,7 @@ in the separate sandboxed `pdf2epub-worker`. See settings.py for the configurati
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import os
 import re
@@ -21,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -46,6 +47,21 @@ DEFAULT_PORT = 5050  # 5000 is often taken (macOS AirPlay receiver, Docker Deskt
 # pdf2epub can run next to other local projects.
 RESERVED_PORTS = set(range(3000, 3005)) | set(range(8000, 8021))
 CHUNK = 1024 * 1024
+
+
+def page(name: str) -> str:
+    """A page from static/, with ?v=<content hash> on its /static/ links. Cloudflare keeps scripts and styles
+    in browsers for hours whatever the server says; a new version gets a new address, so it is picked up at once."""
+    html = (STATIC / name).read_text(encoding="utf-8")
+
+    def versioned(match: re.Match) -> str:
+        target = STATIC / match.group(2)
+        if not target.is_file():
+            return match.group(0)
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()[:12]
+        return f'{match.group(1)}/static/{match.group(2)}?v={digest}"'
+
+    return re.sub(r'((?:src|href)=")/static/([\w.-]+)"', versioned, html)
 
 
 class GuestBody(BaseModel):
@@ -112,16 +128,16 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
     # -- pages and sign-in ---------------------------------------------------------------------------------
 
     @app.get("/")
-    def index() -> FileResponse:
-        return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
+    def index() -> HTMLResponse:
+        return HTMLResponse(page("index.html"), headers={"Cache-Control": "no-cache"})
 
     @app.get("/privacy")
-    def privacy() -> FileResponse:
-        return FileResponse(STATIC / "privacy.html", headers={"Cache-Control": "no-cache"})
+    def privacy() -> HTMLResponse:
+        return HTMLResponse(page("privacy.html"), headers={"Cache-Control": "no-cache"})
 
     @app.get("/terms")
-    def terms() -> FileResponse:
-        return FileResponse(STATIC / "terms.html", headers={"Cache-Control": "no-cache"})
+    def terms() -> HTMLResponse:
+        return HTMLResponse(page("terms.html"), headers={"Cache-Control": "no-cache"})
 
     @app.get("/auth/login")
     async def login(request: Request) -> Response:

@@ -472,3 +472,11 @@ def test_guest_bot_check_and_switch(tmp_path: Path, monkeypatch):
     closed = dataclasses.replace(settings_for(tmp_path / "closed"), allow_guests=False)
     c = TestClient(create_app(settings=closed, start_worker=False), base_url=BASE, headers={"Origin": BASE})
     assert c.post("/auth/guest", json={}).status_code == 403
+
+
+def test_pages_link_versioned_assets(tmp_path: Path):
+    html = Site(tmp_path).client().get("/").text
+    import re as _re
+
+    links = _re.findall(r'/static/(app\.js|style\.css)\?v=([0-9a-f]{12})"', html)
+    assert {name for name, _ in links} == {"app.js", "style.css"}

@@ -34,6 +34,8 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-edi
 ARG TESSERACT_LANGS=heb,eng,yid,ara,fas,rus,ukr,fra,deu,spa,ita,por,nld,pol
 COPY docker/warmup.py /tmp/warmup.py
 RUN python /tmp/warmup.py "$TESSERACT_LANGS" && rm -rf /tmp/* /app/models/hf/xet
+# Some downloads are private to root (mode 600); the app runs as an unprivileged user and only reads them.
+RUN chmod -R a+rX,go-w /app
 
 
 FROM base

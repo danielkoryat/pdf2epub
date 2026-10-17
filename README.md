@@ -68,6 +68,12 @@ The library (title, author, language, status, the edits you made, and the result
 The server listens on this computer only (127.0.0.1). The default port is 5050 (5000 is often taken by macOS
 AirPlay or Docker); ports 3000–3004 and 8000–8020 are refused so it never collides with other dev servers.
 
+### As a website
+
+`PDF2EPUB_MODE=server` turns the same app into a public site with Google sign-in, per-user libraries, monthly
+page allowances, rate limits, an admin dashboard and an audit log, with conversions in a sandboxed worker
+container. [docs/deploy.md](docs/deploy.md) sets it up with Docker behind Caddy and Cloudflare.
+
 ## Command line
 
 ```

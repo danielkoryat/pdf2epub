@@ -14,3 +14,6 @@ samples/
 tools/
 models/
 data/
+
+# Server deployment settings (deploy/*.env.example are the templates)
+deploy/*.env

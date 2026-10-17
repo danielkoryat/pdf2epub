@@ -1,0 +1,73 @@
+# pdf2epub on a server: the web app and a sandboxed conversion worker. See docs/deploy.md.
+#
+#   cd deploy && docker compose up -d --build
+#
+# web     signs people in, takes uploads and serves books. Listens on 127.0.0.1 only; Caddy is in front.
+# worker  opens the uploaded files. It has no network at all, never sees a secret, cannot write outside the
+#         data volume and /tmp, and is capped in memory and processes. Each job runs in its own child process
+#         with a time limit.
+# Both run as an unprivileged user with every Linux capability dropped and a read-only root filesystem.
+
+name: pdf2epub
+
+x-sandbox: &sandbox
+  image: pdf2epub:latest
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  init: false # tini is the image's entrypoint
+  volumes:
+    - data:/data
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+services:
+  web:
+    <<: *sandbox
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    env_file: [settings.env, secrets.env]
+    environment:
+      PDF2EPUB_WORKER_IN_PROCESS: "false"
+    tmpfs:
+      - /tmp:size=512m,mode=1777 # uploads are spooled here (100 MB each at most)
+    ports:
+      - "127.0.0.1:5250:5250"
+    networks: [web]
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: 1.0
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5250/api/info', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  worker:
+    <<: *sandbox
+    command: ["pdf2epub-worker"]
+    env_file: [settings.env] # never secrets.env
+    network_mode: none
+    tmpfs:
+      - /tmp:size=256m,mode=1777 # job files go to /data/tmp instead
+    mem_limit: 4g
+    memswap_limit: 4g
+    cpus: 1.5
+    pids_limit: 256
+    ulimits:
+      nofile: { soft: 4096, hard: 4096 }
+    stop_grace_period: 20s
+    depends_on:
+      web:
+        condition: service_started
+
+volumes:
+  data:
+
+networks:
+  web:

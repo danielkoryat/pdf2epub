@@ -176,6 +176,13 @@ def main(argv: list[str] | None = None) -> int:
         return subprocess.call([sys.executable, "-X", "utf8", "-m", "pdf2epub_voice", *(argv if argv is not None else sys.argv[1:])],
                                creationflags=NO_WINDOW if not sys.stderr else 0)
     os.environ.setdefault("TQDM_DISABLE", "1")  # no progress bars from the models in the log
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    # Started at sign-in without a console (pythonw) there is no stdout or stderr, and libraries that print
+    # (download progress bars, BlueTTS's notes) would fail: give them somewhere to write.
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115 -- for the life of the process
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
     p = argparse.ArgumentParser(prog="pdf2epub-voice", description="Make the voices of pdf2epub audiobooks.")
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="command", required=True)

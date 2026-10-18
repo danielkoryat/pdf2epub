@@ -370,7 +370,8 @@ async function refreshJobs() {
   try {
     const before = activeKey;
     allJobs = await api("/api/jobs");
-    if (ME?.audiobooks && allJobs.some(j => j.kind === "audio" && ACTIVE.has(j.status))) await loadVoices();
+    // Voice names for the audiobook cards, and (while one waits or is read) whether the voice worker is online.
+    if (ME?.audiobooks && allJobs.some(j => j.kind === "audio" && (ACTIVE.has(j.status) || !VOICES))) await loadVoices();
     activeKey = allJobs.filter(j => ACTIVE.has(j.status)).map(j => j.id).join();
     renderJobs();
     if (MODE === "server" && activeKey !== before) await loadMe(); // a job started or settled: pages changed

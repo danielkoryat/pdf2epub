@@ -5,6 +5,7 @@ no limits. **Server mode** turns it into a public site:
 
 - Google sign-in, and every user sees only their own books
 - a monthly page allowance per user, plus pages an admin grants
+- audiobooks, with the voices made by a computer with a GPU elsewhere (see [audiobooks.md](audiobooks.md))
 - rate limits, size, page and storage limits, and checks that refuse hostile files
 - conversions in a sandboxed worker container with no network and no secrets
 - an admin dashboard (users, sign-ins with address and country, usage, jobs) and an append-only, tamper-evident audit log
@@ -25,6 +26,10 @@ visitor ── Cloudflare ── Caddy (TLS, :443) ── web container (127.0.0
   secrets, a read-only filesystem apart from the data volume, no Linux capabilities, and memory, CPU and
   process caps.
 - Both containers use the same image and run as an unprivileged user.
+- **Audiobook voices** are made outside the server, by the voice worker on a computer with a GPU (it can be a
+  laptop at home). It connects to the site like a visitor, through Cloudflare, signing its requests with
+  `PDF2EPUB_VOICE_TOKEN`; see [audiobooks.md](audiobooks.md). An audiobook takes about 21 MB per hour of
+  audio on the data volume.
 
 The image works on x86-64 and ARM64 (for example Oracle Cloud's Ampere machines). It needs no GPU. On two ARM
 cores a 300-page scanned book takes roughly 35 to 45 minutes; born-digital PDFs are much faster.
@@ -144,6 +149,12 @@ All limits are environment variables in `settings.env` (`PDF2EPUB_<NAME>`). The 
 | `JOB_TIMEOUT_MINUTES` | 90 | a job running longer is stopped and refunded |
 | `MAX_EPUB_ENTRIES` | 5000 | files inside an uploaded EPUB |
 | `MAX_EPUB_UNPACKED_MB` | 500 | total unpacked size of an uploaded EPUB |
+
+| `AUDIOBOOKS_PER_DAY` | 1 | audiobooks per user per day (when `PDF2EPUB_AUDIOBOOKS=everyone`) |
+| `MAX_AUDIOBOOK_CHARS` | 1500000 | longest book read aloud, in letters (about 30 hours) |
+
+`PDF2EPUB_AUDIOBOOKS` decides who sees audiobooks: `admins` (the default), `everyone` (signed in with Google;
+never guests) or `off`.
 
 Request rate limits (sign-in, uploads, other writes, downloads, reads) are built in. Admins have no page,
 upload-count or storage limits (only the upload size).

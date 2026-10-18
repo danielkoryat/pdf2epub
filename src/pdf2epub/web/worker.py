@@ -27,8 +27,10 @@ from dataclasses import asdict
 from ..draftio import save_draft
 from ..edit import Edits, apply_edits
 from ..enrich import EnrichOptions, EpubPackage, enrich_epub, inspect_epub
+from ..narration import narration_script, save_script
 from ..pipeline import Draft, Options, build, prepare
 from ..validate import check_epub
+from ..voices import estimate
 from .db import Database
 from .jobs import Job, Library
 from .quota import Quota
@@ -101,7 +103,9 @@ def run_action(settings: Settings, db: Database, library: Library, job_id: str) 
     logging.getLogger().addHandler(handler)
     quota = Quota(db, settings.limits)
     try:
-        if job.kind == "epub":
+        if job.kind == "audio":
+            _prepare_audio(settings, library, db, job, reporter)  # the voices are made elsewhere (voice.py)
+        elif job.kind == "epub":
             _prepare_epub(library, db, job, reporter) if action == "prepare" else _build_epub(library, db, job, reporter, job.edits or {})
         else:
             _prepare_pdf(settings, library, db, quota, job, reporter) if action == "prepare" else _build_pdf(library, db, job, reporter, job.edits or {})
@@ -261,6 +265,34 @@ def _build_epub(library: Library, db: Database, job: Job, reporter: _Reporter, e
     reporter.flush(force=True)
     db.update_job(job.id, status="done", pending=None, report=report, title=info.title or job.title,
                   authors=", ".join(info.authors), language=info.language or "", size=library.folder_size(job.id))
+
+
+def _prepare_audio(settings: Settings, library: Library, db: Database, job: Job, reporter: _Reporter) -> None:
+    """The text an audiobook reads, from a copy of the finished book; then the job waits for a voice worker."""
+    reporter.progress("narrate", 0, 1)
+    data = library.input_path(job).read_bytes()
+    authors = [a.strip() for a in job.authors.split(",") if a.strip()]
+    try:
+        script = narration_script(data, title=job.title, authors=authors, language=job.options["language"])
+    except Exception:
+        raise JobFailed("The book's text could not be read") from None
+    if not script.chapters:
+        raise JobFailed("The book has no text to read aloud")
+    limit = settings.limits.max_audiobook_chars
+    if settings.server and script.characters > limit and (db.user(job.owner_id) or {}).get("role") != "admin":
+        raise JobFailed(f"The book is too long for an audiobook here ({script.characters:,} letters; the limit is {limit:,})")
+    save_script(script, library.script_path(job))
+    pkg = EpubPackage(data)
+    cover = pkg.cover_item()
+    cover_bytes = pkg.files.get(pkg.item_path(cover)) if cover is not None else None
+    if cover_bytes and (cover_bytes[:3] == b"\xff\xd8\xff" or cover_bytes[:8] == b"\x89PNG\r\n\x1a\n"):
+        library.audio_cover_path(job).write_bytes(cover_bytes)
+    summary = {"chapters": len(script.chapters), "characters": script.characters, **estimate(script.characters, job.options)}
+    log.info("Audiobook text: %d chapters, %d letters", len(script.chapters), script.characters)
+    reporter.flush(force=True)
+    # attempts start again: they count the voice worker's tries from here on
+    db.update_job(job.id, status="queued", pending="speak", stage="", done=0, total=0, attempts=0, summary=summary,
+                  size=library.folder_size(job.id))
 
 
 # ---------------------------------------------------------------------------------------------------------

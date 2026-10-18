@@ -1,0 +1,60 @@
+[project]
+name = "pdf2epub-voice"
+version = "0.1.0"
+description = "Makes the voices of pdf2epub audiobooks on a computer with a GPU, for a pdf2epub site or the local app"
+license = "AGPL-3.0-or-later"
+# BlueTTS's Hebrew front end (renikud-plus) needs Python 3.12; Chatterbox pins numpy below 2.
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "blue-onnx",
+    "edge-tts>=7.0",
+    "httpx>=0.27",
+    "huggingface-hub>=0.26",
+    "numpy>=1.26,<2",
+    # BlueTTS's Hebrew letters-to-sounds model. 0.5 looks for model files that are not published; 0.3 is what
+    # the BlueTTS repository is locked to.
+    "renikud-plus==0.3.0",
+    "soundfile>=0.12",
+]
+
+[project.optional-dependencies]
+# Chatterbox Multilingual on an NVIDIA GPU. Its watermark module still imports pkg_resources (setuptools < 81),
+# and it reads Hebrew with vowel marks added by Dicta.
+chatterbox = [
+    "chatterbox-tts==0.1.7",
+    "dicta-onnx>=1.0.9",
+    "setuptools<81",
+    "torch==2.6.0",
+    "torchaudio==2.6.0",
+]
+
+[project.scripts]
+pdf2epub-voice = "pdf2epub_voice.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pdf2epub_voice"]
+
+[tool.uv]
+# dicta-onnx pins onnxruntime 1.21.1 exactly; it runs fine on the newer one RenikudPlus needs.
+override-dependencies = ["onnxruntime>=1.24.2"]
+
+[tool.uv.sources]
+# The PyPI release of blue-onnx (0.2) is older than the BlueTTS 2.5 models; use the repository at a fixed commit.
+blue-onnx = { git = "https://github.com/maxmelichov/BlueTTS", rev = "0e38dbf08ed53f85863d1eab092bd9572c53a503" }
+torch = { index = "pytorch-cu124", marker = "sys_platform != 'darwin'" }
+torchaudio = { index = "pytorch-cu124", marker = "sys_platform != 'darwin'" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -281,7 +281,13 @@ function fmtSeconds(s) {
   return m ? `${m} min ${Math.round(s % 60)} s` : `${Math.round(s)} s`;
 }
 
+function fmtLength(s) {
+  const m = Math.round(s / 60);
+  return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${Math.max(m, 1)} min`;
+}
+
 function jobCard(job) {
+  if (job.kind === "audio") return audioCard(job);
   const status = el("span", { class: `badge ${job.status}` }, STATUS[job.status] || job.status);
   const sub = [job.kind === "epub" ? "EPUB enrichment" : "PDF conversion"];
   if (job.authors) sub.push(job.authors);
@@ -305,6 +311,7 @@ function jobCard(job) {
   if (job.status === "done") {
     buttons.append(el("a", { class: "button", href: `/api/jobs/${job.id}/epub`, onclick: () => track("book_downloaded", { kind: job.kind }) },
       el("button", { class: "primary", type: "button" }, "Download EPUB")));
+    if (ME?.audiobooks) buttons.append(el("button", { type: "button", onclick: () => openAudiobook(job) }, "Make audiobook"));
   }
   if (job.summary && !ACTIVE.has(job.status)) {
     const label = job.kind === "epub"
@@ -363,6 +370,7 @@ async function refreshJobs() {
   try {
     const before = activeKey;
     allJobs = await api("/api/jobs");
+    if (ME?.audiobooks && allJobs.some(j => j.kind === "audio" && ACTIVE.has(j.status))) await loadVoices();
     activeKey = allJobs.filter(j => ACTIVE.has(j.status)).map(j => j.id).join();
     renderJobs();
     if (MODE === "server" && activeKey !== before) await loadMe(); // a job started or settled: pages changed
@@ -380,6 +388,153 @@ async function removeJob(job) {
   try { await api(`/api/jobs/${job.id}`, { method: "DELETE" }); } catch (err) { alert(err.message); }
   refreshJobs();
 }
+
+/* ---------------------------------------------------------------- audiobooks */
+
+// The voices on offer and whether the computer that makes them (the voice worker) is online.
+let VOICES = null;
+
+async function loadVoices() {
+  try { VOICES = await api("/api/voices"); } catch { /* keep what we had */ }
+  return VOICES;
+}
+
+function engineOf(id) { return VOICES?.engines.find(e => e.id === id); }
+
+function voiceLabel(job) {
+  const o = job.options || {};
+  const engine = engineOf(o.engine);
+  const voice = engine?.voices.find(v => v.id === o.voice);
+  return `${voice?.label || o.voice || ""} (${engine?.label || o.engine || ""})${o.speed && o.speed !== 1 ? `, ${Math.round(o.speed * 100)}% speed` : ""}`;
+}
+
+function audioCard(job) {
+  const speaking = job.pending === "speak";
+  const label = job.status === "building" && speaking ? "Reading aloud" : job.status === "queued" && speaking ? "Waiting for voices" : STATUS[job.status] || job.status;
+  const status = el("span", { class: `badge ${job.status}` }, label);
+  const sub = ["Audiobook", voiceLabel(job)];
+  if (job.summary) sub.push(`${job.summary.chapters} chapters`, job.report ? fmtLength(job.report.seconds) : `about ${fmtLength(job.summary.audio_seconds)}`);
+  if (job.report) sub.push(`${(job.report.size / 1048576).toFixed(0)} MB`);
+
+  const buttons = el("div", { class: "buttons" });
+  if (job.status === "done") {
+    buttons.append(el("a", { class: "button", href: `/api/jobs/${job.id}/audiobook`, onclick: () => track("audiobook_downloaded", { engine: job.options?.engine }) },
+      el("button", { class: "primary", type: "button" }, "Download audiobook")));
+  }
+  if (!ACTIVE.has(job.status) || speaking) {
+    buttons.append(el("button", { class: "ghost danger", type: "button", onclick: () => removeJob(job) }, ACTIVE.has(job.status) ? "Cancel" : "Delete"));
+  }
+  const card = el("div", { class: "card job" },
+    el("div", {},
+      el("div", { class: "name" }, el("bdi", {}, job.title || job.filename), status),
+      el("div", { class: "sub muted" }, sub.join(" · ")),
+    ),
+    buttons,
+  );
+  if (ACTIVE.has(job.status)) {
+    const pct = job.total ? Math.round((100 * job.done) / job.total) : 0;
+    const bar = el("div", { class: `progress ${job.total ? "" : "indeterminate"}` }, el("div", { style: job.total ? `width:${pct}%` : "" }));
+    let text;
+    if (job.status === "queued" && speaking) {
+      const online = VOICES?.online && VOICES.online_engines.includes(job.options?.engine);
+      text = !online ? "Waiting for the computer that makes the voices to come online"
+        : job.queue_position > 1 ? `${job.queue_position - 1} audiobooks ahead` : "Starting soon";
+      if (job.summary) text += ` · making it takes about ${fmtLength(job.summary.making_seconds)}`;
+    } else if (job.status === "queued") {
+      text = "Waiting";
+    } else {
+      text = `${job.stage_label || "Starting"}${job.total ? ` · ${pct}%` : ""}`;
+    }
+    card.append(el("div", { class: "bar" }, bar, el("span", { class: "muted" }, text)));
+    if (job.log.length) card.append(el("div", { class: "log", dir: "auto" }, job.log.slice(-4).join("\n")));
+  }
+  if (job.status === "failed") card.append(el("div", { class: "error" }, job.error || "Failed"));
+  return card;
+}
+
+const abDialog = $("#audiobook");
+const abAudio = $("#ab-audio");
+let abSource = null;
+
+async function openAudiobook(job) {
+  if (!(await loadVoices())) { alert("The voices could not be loaded."); return; }
+  abSource = job;
+  const lang = (job.language || "").split("-")[0];
+  $("#ab-book").textContent = job.title || job.filename;
+  $("#ab-error").classList.add("hidden");
+  const engines = VOICES.engines.filter(e => e.languages.includes(lang));
+  if (!engines.length) {
+    $("#ab-error").textContent = "Audiobooks can be made of Hebrew and English books.";
+    $("#ab-error").classList.remove("hidden");
+  }
+  $("#ab-engine").replaceChildren(...engines.map(e => el("option", { value: e.id }, e.label)));
+  $("#ab-engine").value = engines.some(e => e.id === VOICES.default.engine) ? VOICES.default.engine : engines[0]?.id || "";
+  $("#ab-speed").replaceChildren(...VOICES.speeds.map(v => el("option", { value: String(v) }, v === 1 ? "Normal" : `${Math.round(v * 100)}%`)));
+  $("#ab-speed").value = String(VOICES.default.speed);
+  $("#ab-submit").disabled = !engines.length;
+  fillVoices();
+  abDialog.showModal();
+}
+
+function fillVoices() {
+  const lang = (abSource.language || "").split("-")[0];
+  const engine = engineOf($("#ab-engine").value);
+  if (!engine) return;
+  const voices = engine.voices.filter(v => v.languages.includes(lang));
+  $("#ab-voice").replaceChildren(...voices.map(v => el("option", { value: v.id }, `${v.label} (${v.gender})`)));
+  if (voices.some(v => v.id === VOICES.default.voice)) $("#ab-voice").value = VOICES.default.voice;
+  $("#ab-quality").replaceChildren(...engine.qualities.map(q => el("option", { value: q.id }, q.label)));
+  $("#ab-quality-box").classList.toggle("hidden", engine.qualities.length < 2);
+  $("#ab-about").textContent = engine.about;
+  describeAudiobook();
+}
+
+function describeAudiobook() {
+  const engine = engineOf($("#ab-engine").value);
+  const lang = (abSource.language || "").split("-")[0];
+  const voice = engine?.voices.find(v => v.id === $("#ab-voice").value);
+  $("#ab-play").disabled = !voice?.samples[lang];
+  const quality = engine?.qualities.find(q => q.id === $("#ab-quality").value) || engine?.qualities[0];
+  const hours = quality ? 10 / quality.factor : 0;
+  let text = quality ? `A 10-hour book takes about ${hours < 1 ? `${Math.round(hours * 60)} minutes` : `${Math.round(hours * 10) / 10} hours`} to make.` : "";
+  if (!VOICES.online) text += " The computer that makes the voices is offline right now; the audiobook will wait in the queue until it connects.";
+  else if (engine && !VOICES.online_engines.includes(engine.id)) text += ` The computer that makes the voices doesn't have ${engine.label} installed.`;
+  $("#ab-estimate").textContent = text;
+}
+
+$("#ab-engine").addEventListener("change", fillVoices);
+$("#ab-voice").addEventListener("change", describeAudiobook);
+$("#ab-quality").addEventListener("change", describeAudiobook);
+$("#ab-play").addEventListener("click", () => {
+  const engine = engineOf($("#ab-engine").value);
+  const voice = engine?.voices.find(v => v.id === $("#ab-voice").value);
+  const url = voice?.samples[(abSource.language || "").split("-")[0]];
+  if (!url) return;
+  if (!abAudio.paused && abAudio.getAttribute("src") === url) { abAudio.pause(); return; }
+  abAudio.src = url;
+  abAudio.playbackRate = Number($("#ab-speed").value) || 1;
+  abAudio.play().catch(() => { /* the browser refused to play */ });
+});
+const closeAudiobook = () => { abAudio.pause(); abDialog.close(); };
+$("#ab-close").addEventListener("click", closeAudiobook);
+$("#ab-cancel").addEventListener("click", closeAudiobook);
+abDialog.addEventListener("close", () => abAudio.pause());
+$("#ab-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const body = { engine: $("#ab-engine").value, voice: $("#ab-voice").value, speed: Number($("#ab-speed").value), quality: $("#ab-quality").value };
+  $("#ab-submit").disabled = true;
+  try {
+    await api(`/api/jobs/${abSource.id}/audiobook`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    track("audiobook_requested", { engine: body.engine, voice: body.voice });
+    closeAudiobook();
+    refreshJobs();
+  } catch (err) {
+    $("#ab-error").textContent = err.message;
+    $("#ab-error").classList.remove("hidden");
+  } finally {
+    $("#ab-submit").disabled = false;
+  }
+});
 
 /* ---------------------------------------------------------------- review */
 
@@ -837,6 +992,8 @@ async function loadOverview() {
     tile("Queue", fmtNum(s.queued), `${s.running} converting now`),
     tile("Storage", fmtBytes(s.storage_bytes)),
     tile("Blocked requests today", fmtNum(s.blocked_requests_today), `${s.users_blocked} blocked users`),
+    ...data.voice_workers.slice(0, 2).map(w => tile(`Voice worker ${w.name}`,
+      Date.now() / 1000 - w.last_seen < 120 ? "Online" : "Offline", `${w.engines.join(", ") || "no engines"} · last seen ${fmtTime(w.last_seen)}`)),
   );
   const charts = $("#a-charts");
   charts.replaceChildren(

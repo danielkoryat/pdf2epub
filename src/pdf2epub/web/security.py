@@ -132,7 +132,10 @@ class SecurityMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next) -> Response:
         request.state.request_id = secrets.token_hex(8)
-        if request.method not in self.SAFE_METHODS and request.url.path.startswith(("/api/", "/auth/logout")):
+        # The voice worker's API (/api/voice/) is not used by browsers and sends no cookies: it signs each
+        # request with a token instead, so a cross-site request has nothing to ride on.
+        path = request.url.path
+        if request.method not in self.SAFE_METHODS and path.startswith(("/api/", "/auth/logout")) and not path.startswith("/api/voice/"):
             origin = request.headers.get("origin") or _origin_of(request.headers.get("referer", ""))
             # Browsers always say where a cross-site request comes from. With neither header the request is
             # not from a browser (a script on this computer): fine locally, refused on the public server.

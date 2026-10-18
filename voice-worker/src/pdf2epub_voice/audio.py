@@ -1,0 +1,132 @@
+"""Sound plumbing: silences, resampling, loudness, and building the M4B (chapters, cover, tags) with ffmpeg."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+
+RATE = 24_000  # the audiobook's sample rate: plenty for speech, and what Chatterbox and Edge produce
+BITRATE = "48k"  # mono AAC: about 21 MB per hour
+# The worker may run without a console (started at logon): don't flash a window for every ffmpeg call.
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+
+def ffmpeg() -> str:
+    path = shutil.which("ffmpeg")
+    if not path:
+        raise RuntimeError("ffmpeg was not found: install it and make sure it is on PATH")
+    return path
+
+
+def silence(seconds: float, rate: int = RATE) -> np.ndarray:
+    return np.zeros(int(seconds * rate), dtype=np.float32)
+
+
+def resample(audio: np.ndarray, rate: int, target: int = RATE) -> np.ndarray:
+    if rate == target:
+        return audio.astype(np.float32, copy=False)
+    import librosa
+
+    return librosa.resample(audio.astype(np.float32), orig_sr=rate, target_sr=target, res_type="soxr_hq").astype(np.float32)
+
+
+def _pipe(args: list[str], data: bytes) -> bytes:
+    done = subprocess.run([ffmpeg(), "-hide_banner", "-loglevel", "error", *args], input=data, capture_output=True, check=False,
+                          creationflags=NO_WINDOW)
+    if done.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {done.stderr.decode(errors='replace')[-300:]}")
+    return done.stdout
+
+
+def decode(data: bytes, rate: int = RATE) -> np.ndarray:
+    """Any audio file (e.g. MP3) as mono float samples."""
+    raw = _pipe(["-i", "pipe:0", "-f", "f32le", "-ac", "1", "-ar", str(rate), "pipe:1"], data)
+    return np.frombuffer(raw, dtype=np.float32).copy()
+
+
+def change_tempo(audio: np.ndarray, speed: float, rate: int = RATE) -> np.ndarray:
+    """Faster or slower speech at the same pitch (ffmpeg's atempo)."""
+    if abs(speed - 1.0) < 1e-3 or not len(audio):
+        return audio
+    fmt = ["-f", "f32le", "-ac", "1", "-ar", str(rate)]
+    raw = _pipe([*fmt, "-i", "pipe:0", "-filter:a", f"atempo={speed}", *fmt, "pipe:1"], audio.astype(np.float32).tobytes())
+    return np.frombuffer(raw, dtype=np.float32).copy()
+
+
+def normalize(audio: np.ndarray, target_db: float = -20.0, peak: float = 0.95) -> np.ndarray:
+    """Even loudness from chapter to chapter: scale the speech (ignoring silences) to target_db RMS, without
+    letting peaks clip."""
+    if not len(audio):
+        return audio
+    voiced = audio[np.abs(audio) > 0.01]
+    if not len(voiced):
+        return audio
+    rms = float(np.sqrt(np.mean(voiced.astype(np.float64) ** 2)))
+    gain = 10 ** (target_db / 20) / max(rms, 1e-6)
+    top = float(np.max(np.abs(audio))) * gain
+    if top > peak:
+        gain *= peak / top
+    return (audio * gain).astype(np.float32)
+
+
+@dataclass
+class ChapterAudio:
+    title: str
+    path: Path  # FLAC
+    seconds: float
+
+
+def _escape(value: str) -> str:
+    """ffmetadata escaping: =, ;, #, backslash and newlines need a backslash."""
+    out = []
+    for ch in value:
+        if ch in "=;#\\\n":
+            out.append("\\")
+        out.append(ch)
+    return "".join(out)
+
+
+def ffmetadata(title: str, authors: list[str], chapters: list[ChapterAudio], language: str) -> str:
+    """Tags and chapter marks in ffmpeg's metadata format (times in milliseconds)."""
+    who = ", ".join(authors)
+    lines = [";FFMETADATA1", f"title={_escape(title)}", f"album={_escape(title)}", f"artist={_escape(who)}",
+             f"album_artist={_escape(who)}", "genre=Audiobook", f"language={_escape(language)}"]
+    start = 0
+    for ch in chapters:
+        end = start + round(ch.seconds * 1000)
+        lines += ["", "[CHAPTER]", "TIMEBASE=1/1000", f"START={start}", f"END={end}", f"title={_escape(ch.title)}"]
+        start = end
+    return "\n".join(lines) + "\n"
+
+
+def build_m4b(chapters: list[ChapterAudio], title: str, authors: list[str], language: str, cover: bytes | None, out: Path) -> None:
+    """Join the chapters into one M4B with chapter marks, tags and the cover picture."""
+    work = out.parent
+    listing = work / "chapters.txt"
+    quoted = (c.path.resolve().as_posix().replace("'", "'\\''") for c in chapters)  # the concat list's quoting
+    listing.write_text("".join(f"file '{q}'\n" for q in quoted), encoding="utf-8")
+    meta = work / "metadata.txt"
+    meta.write_text(ffmetadata(title, authors, chapters, language), encoding="utf-8")
+    args = [ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing), "-i", str(meta)]
+    maps = ["-map", "0:a", "-map_metadata", "1", "-map_chapters", "1"]
+    if cover:
+        picture = work / ("cover.png" if cover[:4] == b"\x89PNG" else "cover.jpg")
+        picture.write_bytes(cover)
+        args += ["-i", str(picture)]
+        maps += ["-map", "2:v", "-c:v", "copy", "-disposition:v:0", "attached_pic"]
+    tmp = out.with_suffix(".tmp.m4b")
+    args += [*maps, "-c:a", "aac", "-b:a", BITRATE, "-ac", "1", "-ar", str(RATE), "-movflags", "+faststart", "-f", "mp4", str(tmp)]
+    done = subprocess.run(args, capture_output=True, check=False, creationflags=NO_WINDOW)
+    if done.returncode != 0:
+        raise RuntimeError(f"ffmpeg could not build the audiobook: {done.stderr.decode(errors='replace')[-400:]}")
+    tmp.replace(out)
+
+
+def to_mp3(audio: np.ndarray, out: Path, rate: int = RATE, bitrate: str = "64k") -> None:
+    fmt = ["-f", "f32le", "-ac", "1", "-ar", str(rate)]
+    out.write_bytes(_pipe([*fmt, "-i", "pipe:0", "-b:a", bitrate, "-f", "mp3", "pipe:1"], audio.astype(np.float32).tobytes()))

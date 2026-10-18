@@ -18,6 +18,10 @@ for any language Tesseract can read.
 * **EPUB enrichment**: language and right-to-left fixes, a contents page, navigation landmarks, accessibility
   metadata, the cover, title and authors, and an EPUB 2 to EPUB 3 upgrade, without touching the book's own text
   and styling.
+* **Audiobooks**: any finished book can be read aloud into an M4B with chapter marks and the cover, in Hebrew
+  or English, with free open-source voices (BlueTTS, Chatterbox) or Microsoft's online voices. The voices are
+  made on a computer with a GPU, which can be your own laptop serving the public site
+  ([docs/audiobooks.md](docs/audiobooks.md)).
 * **Local web UI** with a library of everything you converted (kept in a local SQLite database). There is also
   a CLI.
 * Output validated with W3C **EPUBCheck**.
@@ -61,6 +65,10 @@ re-reading the PDF.
 **EPUB**: upload an existing book to see what it lacks (language, right-to-left settings, contents page,
 landmarks, accessibility metadata, cover, EPUB 3), tick the improvements you want, optionally set a new cover,
 title or author, and download the enriched copy. EPUBCheck runs before and after.
+
+**Audiobook**: *Make audiobook* on a finished book, choose the engine, voice (with a sample), speed and quality,
+and download the M4B when it is ready. The voices come from the voice worker in `voice-worker/`, set up as in
+[docs/audiobooks.md](docs/audiobooks.md); locally `uv run --project voice-worker pdf2epub-voice run` is enough.
 
 The library (title, author, language, status, the edits you made, and the result) is stored in
 `data/pdf2epub.db` (SQLite); the uploaded and produced files are kept in `data/jobs/`.
@@ -134,6 +142,7 @@ PDF ─► analyse ─────► extract ───────────�
 ```
 uv run pytest -m "not slow"   # unit tests (seconds)
 uv run pytest                 # + end-to-end conversions of generated PDFs (~1.5 min, uses the models)
+uv run --project voice-worker pytest   # the audiobook voice worker (its own environment)
 ```
 
 More background on the design decisions (and the approaches that were tried and dropped) is in

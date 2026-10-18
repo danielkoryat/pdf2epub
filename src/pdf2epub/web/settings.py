@@ -45,6 +45,9 @@ class Limits:
     guest_jobs_per_day: int = 3  # per network address
     guest_max_storage_mb: int = 200
     guests_per_day: int = 5  # new guest libraries per network address per day
+    # Audiobooks (when open to everyone, see Settings.audiobooks; admins have no limits)
+    audiobooks_per_day: int = 1
+    max_audiobook_chars: int = 1_500_000  # letters of text to read, about 30 hours
 
     @classmethod
     def from_env(cls) -> "Limits":
@@ -70,6 +73,10 @@ class Settings:
     allow_guests: bool = True  # server mode: people may convert without signing in, within the guest limits
     turnstile_site_key: str = ""  # Cloudflare Turnstile: a bot check before a guest library is created
     turnstile_secret: str = ""
+    # Audiobooks: who may ask for one (off | admins | everyone), and the token the voice worker (a computer
+    # with a GPU, outside the server) signs its requests with.
+    audiobooks: str = "admins"
+    voice_token: str = ""
     limits: Limits = field(default_factory=Limits)
 
     @property
@@ -105,6 +112,8 @@ class Settings:
             allow_guests=_bool("PDF2EPUB_ALLOW_GUESTS", True),
             turnstile_site_key=os.environ.get("PDF2EPUB_TURNSTILE_SITE_KEY", "").strip(),
             turnstile_secret=os.environ.get("PDF2EPUB_TURNSTILE_SECRET", "").strip(),
+            audiobooks=os.environ.get("PDF2EPUB_AUDIOBOOKS", "admins").strip().lower(),
+            voice_token=os.environ.get("PDF2EPUB_VOICE_TOKEN", "").strip(),
             limits=Limits.from_env(),
         )
         values.update(overrides)
@@ -114,6 +123,10 @@ class Settings:
         return settings
 
     def validate(self) -> None:
+        if self.audiobooks not in ("off", "admins", "everyone"):
+            raise ValueError("PDF2EPUB_AUDIOBOOKS must be 'off', 'admins' or 'everyone'")
+        if self.voice_token and len(self.voice_token) < 32:
+            raise ValueError("PDF2EPUB_VOICE_TOKEN must be at least 32 characters")
         if not self.server:
             return
         missing = [name for name, value in (

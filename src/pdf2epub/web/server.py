@@ -1,6 +1,7 @@
 """The web app: `pdf2epub-web` serves http://127.0.0.1:5050 by default.
 
-Converts PDFs to EPUB and enriches existing EPUB files. In local mode it is a personal tool (no sign-in, the
+Converts PDFs to EPUB, enriches existing EPUB files, and turns finished books into audiobooks (the voices are made
+by a voice worker on a computer with a GPU, see voice.py). In local mode it is a personal tool (no sign-in, the
 worker runs inside it). In server mode (PDF2EPUB_MODE=server) it is a public website: Google sign-in, every user
 sees only their own books, rate limits and page allowances, an admin dashboard and an audit log; conversions run
 in the separate sandboxed `pdf2epub-worker`. See settings.py for the configuration.
@@ -13,6 +14,7 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 import socket
 import sys
 import threading
@@ -30,7 +32,9 @@ from .. import config
 from ..edit import chapter_preview, chapter_summaries
 from ..model import Kind
 from ..validate import epubcheck_available
+from ..voices import catalog, validate_options
 from . import admin as admin_api
+from . import voice as voice_api
 from .auth import Auth
 from .db import Database
 from .jobs import ACTIVE, Job, Library
@@ -66,6 +70,13 @@ def page(name: str) -> str:
 
 class GuestBody(BaseModel):
     turnstile: str = Field(default="", max_length=2048)  # the Cloudflare Turnstile token, when the check is on
+
+
+class AudiobookBody(BaseModel):
+    engine: str = Field(max_length=20)
+    voice: str = Field(max_length=40)
+    speed: float = 1.0
+    quality: str = Field(default="", max_length=20)
 
 
 def create_app(data_dir: Path | None = None, settings: Settings | None = None, start_worker: bool | None = None) -> FastAPI:
@@ -192,9 +203,19 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
             "max_storage_mb": limits.guest_max_storage_mb if guest else limits.max_storage_mb,
         }
 
+    def audiobooks_for(user: dict) -> bool:
+        """Who may ask for audiobooks: nobody, admins, or everyone signed in with Google (guests never: the voices
+        take hours of a home computer's time)."""
+        if settings.audiobooks == "off":
+            return False
+        if settings.audiobooks == "admins":
+            return user["role"] == "admin"
+        return user["role"] in ("user", "admin")
+
     @app.get("/api/me")
     def me(request: Request, user: dict = Depends(reader)) -> dict:
         data = {k: user[k] for k in ("id", "email", "name", "picture", "role")}
+        data["audiobooks"] = audiobooks_for(user)
         if settings.server:
             today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
             data["balance"] = quota.balance(user["id"], network(request)).as_dict()
@@ -402,6 +423,53 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
         auth.audit(request, user, "job.build", target=job.id)
         return public(library.get(job.id))
 
+    @app.get("/api/voices")
+    def voices(user: dict = Depends(reader)) -> dict:
+        """The voices an audiobook can be read with, and whether a voice worker is online to read it."""
+        if not audiobooks_for(user):
+            raise HTTPException(404, "Not found")
+        workers = voice_api.online_workers(db)
+        return {**catalog(), "online": bool(workers), "online_engines": sorted({e for w in workers for e in w["engines"]})}
+
+    @app.post("/api/jobs/{job_id}/audiobook")
+    def make_audiobook(job_id: str, body: AudiobookBody, request: Request, user: dict = Depends(writer)) -> dict:
+        """Read a finished book aloud: a new audio job, with a copy of the book's EPUB."""
+        if not audiobooks_for(user):
+            raise HTTPException(404, "Not found")
+        source = owned(job_id, user)
+        if source.kind not in ("pdf", "epub") or source.status != "done" or not library.epub_path(source).is_file():
+            raise HTTPException(409, "The book is not ready yet")
+        try:
+            options = validate_options(body.model_dump(), source.language)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        if settings.server and user["role"] != "admin":
+            since = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+            if library.jobs_since(user["id"], since, kind="audio") >= limits.audiobooks_per_day:
+                raise HTTPException(429, f"You reached today's limit of {limits.audiobooks_per_day} audiobooks. Please come back tomorrow.")
+            if library.waiting(user["id"]) >= limits.max_waiting_jobs:
+                raise HTTPException(429, f"You already have {limits.max_waiting_jobs} books waiting or in progress. Please wait for them to finish.")
+            if library.storage_used(user["id"]) >= limits.max_storage_mb * CHUNK:
+                raise HTTPException(413, "Your storage is full. Delete some books to make room.")
+        job = library.create(user["id"], f"{source.title}.m4b", {**options, "source": source.id}, review=False, kind="audio",
+                             ip=network(request) if settings.server else "")
+        job.title, job.authors, job.language = source.title, source.authors, options["language"]
+        shutil.copyfile(library.epub_path(source), library.input_path(job))
+        library.submit(job)
+        auth.audit(request, user, "job.audiobook", target=job.id, source=source.id, engine=options["engine"], voice=options["voice"])
+        return public(job)
+
+    @app.get("/api/jobs/{job_id}/audiobook")
+    def download_audiobook(job_id: str, request: Request, user: dict = Depends(auth.user)) -> FileResponse:
+        limited(request, user, "download")
+        job = owned(job_id, user)
+        path = library.m4b_path(job)
+        if job.kind != "audio" or job.status != "done" or not path.is_file():
+            raise HTTPException(409, "The audiobook is not ready")
+        auth.audit(request, user, "job.download", target=job.id, kind="audio")
+        name = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", job.title).strip()[:150] or "book"
+        return FileResponse(path, media_type="audio/mp4", filename=f"{name}.m4b")
+
     @app.get("/api/jobs/{job_id}/epub")
     def download(job_id: str, request: Request, user: dict = Depends(auth.user)) -> FileResponse:
         limited(request, user, "download")
@@ -415,6 +483,7 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
 
     if settings.server:
         app.include_router(admin_api.router(settings, db, library, auth, quota))
+    app.include_router(voice_api.router(settings, db, library, auth, limiter))
 
     @app.exception_handler(Exception)
     async def unexpected(request: Request, exc: Exception) -> JSONResponse:

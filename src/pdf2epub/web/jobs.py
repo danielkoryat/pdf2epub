@@ -2,13 +2,17 @@
 
 The web process never converts anything. It creates a job and marks what should happen next (`pending`:
 prepare or build); a worker (worker.py) claims it from the queue, runs it, and reports progress back through
-the database. Two kinds of job:
+the database. Three kinds of job:
   * pdf:  convert a PDF. queued -> preparing (OCR, structure) -> review -> building -> done
   * epub: enrich an existing EPUB. queued -> preparing (inspection) -> review -> building -> done
+  * audio: read a finished book aloud. queued -> preparing (the text to read) -> queued (pending "speak") ->
+    building (a voice worker on another computer makes the voices, see voice.py) -> done
 With review switched off the worker builds straight after preparing; a failure ends in "failed".
 
 Files of a job: input.pdf or input.epub, draft.json (a prepared PDF), cover-original (an EPUB's cover, extracted
-by the worker), cover-upload (a new cover the user chose), book.epub (the result).
+by the worker), cover-upload (a new cover the user chose), book.epub (the result). An audio job has input.epub
+(a copy of the book it reads), script.json (the text to read), cover (the book's cover, JPEG or PNG), parts/
+(the audiobook while it is uploaded in pieces) and book.m4b (the result).
 """
 
 from __future__ import annotations
@@ -37,6 +41,8 @@ STAGE_LABELS = {
     "write": "Writing EPUB",
     "inspect": "Inspecting the EPUB",
     "enrich": "Enriching the EPUB",
+    "narrate": "Preparing the text to read",
+    "speak": "Reading aloud",
 }
 
 
@@ -46,11 +52,11 @@ class Job:
     filename: str
     created: float
     options: dict
-    kind: str = "pdf"  # pdf | epub
+    kind: str = "pdf"  # pdf | epub | audio
     owner_id: str = "local"
     review: bool = True
     status: str = "queued"
-    pending: str | None = None  # what a worker should do next: prepare | build
+    pending: str | None = None  # what a worker should do next: prepare | build | speak (audio)
     stage: str = ""
     done: int = 0
     total: int = 0
@@ -108,7 +114,7 @@ class Library:
         return self.root / job_id
 
     def input_path(self, job: Job) -> Path:
-        return self.dir(job.id) / f"input.{job.kind}"
+        return self.dir(job.id) / f"input.{'epub' if job.kind == 'audio' else job.kind}"
 
     def cover_upload_path(self, job: Job) -> Path:
         return self.dir(job.id) / "cover-upload"
@@ -121,6 +127,18 @@ class Library:
 
     def epub_path(self, job: Job) -> Path:
         return self.dir(job.id) / "book.epub"
+
+    def script_path(self, job: Job) -> Path:
+        return self.dir(job.id) / "script.json"
+
+    def audio_cover_path(self, job: Job) -> Path:
+        return self.dir(job.id) / "cover"
+
+    def parts_dir(self, job: Job) -> Path:
+        return self.dir(job.id) / "parts"
+
+    def m4b_path(self, job: Job) -> Path:
+        return self.dir(job.id) / "book.m4b"
 
     def has_draft(self, job: Job) -> bool:
         return self.draft_path(job).is_file() or (self.allow_pickle and (self.dir(job.id) / "draft.pkl").is_file())
@@ -184,7 +202,8 @@ class Library:
         shutil.rmtree(self.dir(job.id), ignore_errors=True)
 
     def delete(self, job: Job) -> None:
-        if job.status in ACTIVE:
+        # An audiobook waiting for voices or being read can go: the voice worker finds it gone and stops.
+        if job.status in ACTIVE and job.pending != "speak":
             raise RuntimeError("A running job cannot be deleted.")
         with self._lock:
             self._drafts.pop(job.id, None)
@@ -197,8 +216,10 @@ class Library:
         row = self.db.one("SELECT COALESCE(SUM(size), 0) AS n FROM jobs WHERE owner_id=?", (owner_id,))
         return int(row["n"]) if row else 0
 
-    def jobs_since(self, owner_id: str, since: float) -> int:
-        return self.db.one("SELECT COUNT(*) AS n FROM jobs WHERE owner_id=? AND created>=?", (owner_id, since))["n"]
+    def jobs_since(self, owner_id: str, since: float, kind: str | None = None) -> int:
+        """Jobs created since `since`: of one kind, or (kind=None) books uploaded, not counting audiobooks."""
+        where = "kind=?" if kind else "kind!=?"
+        return self.db.one(f"SELECT COUNT(*) AS n FROM jobs WHERE owner_id=? AND created>=? AND {where}", (owner_id, since, kind or "audio"))["n"]
 
     def guest_jobs_since(self, network: str, since: float) -> int:
         """Uploads by all guests from one network."""

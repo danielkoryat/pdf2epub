@@ -93,6 +93,30 @@ the NCX, XHTML 1.1 doctypes become HTML5, HTML4 leftovers HTML5 rejects are fixe
 On eight real EPUBs (Hebrew and English, EPUB 2 and 3) no enrichment added an EPUBCheck error, and one book
 went from 7 errors to 3.
 
+## Audiobooks (`narration.py`, `voices.py`, `web/voice.py`, `voice-worker/`)
+
+**Read the EPUB, not the draft.** Both converted and uploaded books end as an EPUB, so one reader serves both,
+and the user's chapter edits are already in it. Chapters follow the contents (entries pointing into the
+middle of a file split it); footnotes, note marks, page numbers, tables and front matter are left out; each
+paragraph carries its language, so English in a Hebrew book is read by an English voice.
+
+**The voices are made elsewhere.** The server has no GPU, so a voice worker on another computer (the owner's
+laptop) takes the jobs over HTTPS: it connects out, so no port is opened at home, and it works the same for the
+public site and the local app. It authenticates with a token of its own (the API is exempt from the
+same-origin check, which protects cookie sessions), sees only the text and cover, and uploads the M4B in parts
+under Cloudflare's 100 MB request limit. Its progress reports are the job's heartbeat; a job whose worker
+falls silent is queued again and resumed from the chapters already made (ten attempts instead of two). The
+voice worker is a separate project because Chatterbox pins torch and transformers versions Docling can't share,
+and BlueTTS's Hebrew front end needs Python 3.12.
+
+**Engines** (chosen from listening tests with the same Hebrew passage): BlueTTS sounded the most natural of the
+open models and runs on the processor at 2.5x to 5x real time; more refinement steps (32 instead of 5) make it
+smoother. Chatterbox Multilingual needs Dicta's vowel marks for Hebrew (it silently skips them when Dicta's
+model is missing) and occasionally rambles, so a sentence of implausible length is made again. Microsoft's
+Edge voices are kept as a fast option. Phonikud's own voices (non-commercial license), Zonos-Hebrew and
+MamreTTS (non-commercial, Linux only) and Fish-Speech S2-Pro Hebrew (4.6B parameters, research license) were
+not used.
+
 ## Web UI storage
 
 Jobs are rows in a SQLite database (`data/pdf2epub.db`, WAL mode): kind (PDF conversion or EPUB enrichment),

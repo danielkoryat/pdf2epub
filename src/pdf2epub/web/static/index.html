@@ -241,6 +241,34 @@
     <div id="preview-body" class="preview-body"></div>
   </dialog>
 
+  <dialog id="audiobook" aria-labelledby="ab-title">
+    <form id="ab-form">
+      <div class="dialog-head">
+        <h3 id="ab-title">Make an audiobook</h3>
+        <button class="ghost" type="button" id="ab-close" aria-label="Close">✕</button>
+      </div>
+      <div class="dialog-body">
+        <p class="muted"><bdi id="ab-book"></bdi></p>
+        <div class="grid">
+          <label>Engine <select id="ab-engine"></select></label>
+          <label>Voice
+            <span class="voice-pick"><select id="ab-voice"></select><button type="button" class="ghost" id="ab-play" title="Play a sample">Play</button></span>
+          </label>
+          <label>Speed <select id="ab-speed"></select></label>
+          <label id="ab-quality-box">Quality <select id="ab-quality"></select></label>
+        </div>
+        <p id="ab-about" class="muted small"></p>
+        <p id="ab-estimate" class="small"></p>
+        <p id="ab-error" class="error hidden" role="alert"></p>
+        <div class="buttons dialog-actions">
+          <button type="button" class="ghost" id="ab-cancel">Cancel</button>
+          <button type="submit" class="primary" id="ab-submit">Make audiobook</button>
+        </div>
+      </div>
+    </form>
+    <audio id="ab-audio" preload="none"></audio>
+  </dialog>
+
   <script src="/static/app.js"></script>
 </body>
 </html>

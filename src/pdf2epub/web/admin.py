@@ -88,7 +88,9 @@ def router(settings: Settings, db: Database, library: Library, auth: Auth, quota
         # Where users sign in from (distinct users per country, last 30 days).
         rows = db.query("SELECT DISTINCT user_id, country FROM audit WHERE action='auth.login' AND outcome='ok' AND ts>=?", (day_start(tz, 29),))
         countries = Counter(r["country"] or "unknown" for r in rows)
-        return {"stats": stats, "days": days, "countries": countries.most_common(), "timezone": settings.timezone}
+        voice_workers = [{"name": w["name"].removeprefix("voice:"), "last_seen": w["last_seen"], "engines": w["engines"]} for w in db.voice_workers()]
+        return {"stats": stats, "days": days, "countries": countries.most_common(), "timezone": settings.timezone,
+                "voice_workers": voice_workers}
 
     @r.get("/users")
     def users(q: str = "", _: dict = Depends(admin)) -> list[dict[str, Any]]:

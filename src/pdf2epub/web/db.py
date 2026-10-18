@@ -10,6 +10,8 @@ Tables:
             from paid pages.
   audit     an append-only record of security-relevant events. Triggers refuse UPDATE and DELETE, and each
             row carries a hash chained to the previous row, so tampering shows.
+  voice_workers  computers that make audiobook voices (they connect from outside): when each was last seen
+            and which voice engines it has.
 """
 
 from __future__ import annotations
@@ -133,9 +135,19 @@ CREATE INDEX IF NOT EXISTS usage_ip ON usage (ip, created);
 CREATE INDEX IF NOT EXISTS users_guest_ip ON users (role, last_ip, created);
 """
 
-MIGRATIONS = [_V1, _V2, _V3]
+# Audiobooks: jobs of kind 'audio' wait with pending='speak' for a voice worker, which takes them over HTTP.
+_V4 = """
+CREATE TABLE IF NOT EXISTS voice_workers (
+    name      TEXT PRIMARY KEY,
+    last_seen REAL NOT NULL,
+    engines   TEXT NOT NULL DEFAULT '[]',
+    info      TEXT NOT NULL DEFAULT '{}'
+);
+"""
 
-_JSON_FIELDS = ("options", "summary", "report", "edits", "log", "details")
+MIGRATIONS = [_V1, _V2, _V3, _V4]
+
+_JSON_FIELDS = ("options", "summary", "report", "edits", "log", "details", "engines", "info")
 _AUDIT_FIELDS = ("ts", "user_id", "email", "ip", "country", "user_agent", "action", "target", "outcome", "details", "prev_hash")
 
 
@@ -237,39 +249,71 @@ class Database:
     def job_ids(self) -> set[str]:
         return {r["id"] for r in self.query("SELECT id FROM jobs")}
 
-    def claim_job(self, worker: str, kinds: tuple[str, ...] = ("pdf", "epub")) -> dict[str, Any] | None:
+    def claim_job(
+        self,
+        worker: str,
+        kinds: tuple[str, ...] = ("pdf", "epub", "audio"),
+        actions: tuple[str, ...] = ("prepare", "build"),
+        engines: tuple[str, ...] | None = None,
+    ) -> dict[str, Any] | None:
         """Atomically hand the next pending job to a worker. Users without a job in progress go first, so one
-        person's queue cannot hold everybody else up; within that, oldest first."""
-        marks = ",".join("?" for _ in kinds)
+        person's queue cannot hold everybody else up; within that, oldest first. The server's worker takes the
+        'prepare' and 'build' actions; a voice worker takes 'speak' for the voice engines it has."""
+        where = [f"j.kind IN ({','.join('?' for _ in kinds)})", f"j.pending IN ({','.join('?' for _ in actions)})"]
+        params: list[Any] = [*kinds, *actions]
+        if engines is not None:
+            where.append(f"json_extract(j.options, '$.engine') IN ({','.join('?' for _ in engines) or 'NULL'})")
+            params += engines
         now = time.time()
         with self._lock:
             row = self._conn.execute(
                 f"""UPDATE jobs SET status=CASE pending WHEN 'prepare' THEN 'preparing' ELSE 'building' END,
                         worker=?, claimed_at=?, heartbeat=?, attempts=attempts+1, updated=?
-                    WHERE id=(SELECT j.id FROM jobs j WHERE j.pending IS NOT NULL AND j.status='queued' AND j.kind IN ({marks})
+                    WHERE id=(SELECT j.id FROM jobs j WHERE j.status='queued' AND {' AND '.join(where)}
                               ORDER BY EXISTS(SELECT 1 FROM jobs r WHERE r.owner_id=j.owner_id AND r.status IN ('preparing','building')),
                                        j.updated LIMIT 1)
                     RETURNING *""",
-                (worker, now, now, now, *kinds),
+                (worker, now, now, now, *params),
             ).fetchone()
         return self._decode(row) if row else None
 
-    def requeue_stale(self, older_than: float, max_attempts: int = 2) -> list[str]:
-        """Jobs whose worker stopped sending heartbeats: queue them again, or fail them after max_attempts."""
+    def requeue_stale(self, older_than: float, max_attempts: int = 2, speak_attempts: int = 10) -> list[str]:
+        """Jobs whose worker stopped sending heartbeats: queue them again, or fail them after max_attempts.
+        Audiobook voices are made on a home computer that may sleep or restart; it resumes where it stopped,
+        so those jobs get more attempts."""
         cutoff = time.time() - older_than
-        stale = self.query("SELECT id, attempts FROM jobs WHERE status IN ('preparing','building') AND heartbeat < ?", (cutoff,))
+        stale = self.query("SELECT id, attempts, pending FROM jobs WHERE status IN ('preparing','building') AND heartbeat < ?", (cutoff,))
         for row in stale:
-            if row["attempts"] >= max_attempts:
-                self.update_job(row["id"], status="failed", pending=None, error="The conversion stopped unexpectedly. Please try again.")
+            speaking = row["pending"] == "speak"
+            if row["attempts"] >= (speak_attempts if speaking else max_attempts):
+                message = "Making the audiobook stopped unexpectedly." if speaking else "The conversion stopped unexpectedly."
+                self.update_job(row["id"], status="failed", pending=None, error=f"{message} Please try again.")
             else:
                 self.update_job(row["id"], status="queued", worker="")
         return [r["id"] for r in stale]
 
     def queue_position(self, job_id: str) -> int:
-        row = self.one("SELECT updated FROM jobs WHERE id=?", (job_id,))
+        """Jobs ahead in the same queue: audiobook voices wait for a voice worker, everything else for the
+        server's worker."""
+        row = self.one("SELECT updated, pending FROM jobs WHERE id=?", (job_id,))
         if row is None:
             return 0
-        return self.one("SELECT COUNT(*) AS n FROM jobs WHERE status='queued' AND pending IS NOT NULL AND updated < ?", (row["updated"],))["n"]
+        lane = "pending='speak'" if row["pending"] == "speak" else "pending!='speak'"
+        return self.one(
+            f"SELECT COUNT(*) AS n FROM jobs WHERE status='queued' AND pending IS NOT NULL AND {lane} AND updated < ?", (row["updated"],)
+        )["n"]
+
+    # -- voice workers -------------------------------------------------------------------------------------
+
+    def voice_worker_seen(self, name: str, engines: list[str], info: dict[str, Any]) -> None:
+        self.execute(
+            "INSERT INTO voice_workers (name, last_seen, engines, info) VALUES (?,?,?,?)"
+            " ON CONFLICT(name) DO UPDATE SET last_seen=excluded.last_seen, engines=excluded.engines, info=excluded.info",
+            (name[:100], time.time(), json.dumps(engines), json.dumps(info, ensure_ascii=False)),
+        )
+
+    def voice_workers(self) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM voice_workers ORDER BY last_seen DESC")
 
     # -- users and sessions --------------------------------------------------------------------------------
 

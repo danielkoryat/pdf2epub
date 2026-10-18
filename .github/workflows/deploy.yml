@@ -1,0 +1,69 @@
+# Tests every push and pull request; a push to main that passes is deployed to the server.
+#
+# The deploy needs three repository secrets (see docs/deploy.md, "Automatic deploys"):
+#   DEPLOY_HOST          user@address of the server (kept secret: Cloudflare hides the server's address)
+#   DEPLOY_SSH_KEY       a private key whose authorized_keys entry on the server may only run deploy/deploy.sh
+#   DEPLOY_KNOWN_HOSTS   the server's host key line (ssh-keyscan), so the deploy talks to the real server
+# Without them the deploy is skipped.
+
+name: Test and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tesseract (OCR tests)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-heb
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run pytest -m "not slow" -q
+
+  voice-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --project voice-worker
+      - run: uv run --project voice-worker pytest -q voice-worker/tests
+
+  deploy:
+    needs: [test, voice-worker]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to the server
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$KEY" ] || [ -z "$HOST" ] || [ -z "$KNOWN_HOSTS" ]; then
+            echo "::notice::The deploy secrets are not set: skipping the deploy"
+            exit 0
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # The server runs deploy/deploy.sh whatever command is sent.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes -o ServerAliveInterval=30 "$HOST" deploy

@@ -95,8 +95,25 @@ the header.
 ## Updating
 
 ```sh
-cd /opt/pdf2epub && git pull && cd deploy && docker compose up -d --build
+/opt/pdf2epub/deploy/deploy.sh   # pull main, rebuild, restart, wait until healthy
 ```
+
+### Automatic deploys
+
+`.github/workflows/deploy.yml` runs the tests on every push; when a push to `main` passes, GitHub Actions
+connects to the server with a key of its own and runs `deploy/deploy.sh`. The key is limited on the server to
+that one script, so a leaked key can only redeploy what is already on `main`:
+
+```sh
+ssh-keygen -t ed25519 -N "" -C "github-deploy" -f deploy_key        # on any computer
+# on the server, one line in ~/.ssh/authorized_keys:
+#   command="/opt/pdf2epub/deploy/deploy.sh",restrict ssh-ed25519 AAAA... github-deploy
+ssh-keyscan -t ed25519 <server address>                              # the host key line
+```
+
+Then add the repository secrets `DEPLOY_HOST` (`ubuntu@<server address>`; a secret because Cloudflare keeps
+the address private), `DEPLOY_SSH_KEY` (the private key file) and `DEPLOY_KNOWN_HOSTS` (the `ssh-keyscan`
+line), and delete the local copy of the private key. Without the secrets the workflow only tests.
 
 The database is migrated automatically on start. A job that was running when the worker stopped is picked
 up again a few minutes later (or failed, with its pages refunded, after repeated attempts).

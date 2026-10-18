@@ -62,8 +62,9 @@ jobs:
             exit 0
           fi
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$KEY" > ~/.ssh/deploy
+          # tr: secrets saved from Windows may carry CRLF line endings
+          printf '%s\n' "$KEY" | tr -d '\r' > ~/.ssh/deploy
           chmod 600 ~/.ssh/deploy
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$KNOWN_HOSTS" | tr -d '\r' > ~/.ssh/known_hosts
           # The server runs deploy/deploy.sh whatever command is sent.
           ssh -i ~/.ssh/deploy -o BatchMode=yes -o ServerAliveInterval=30 "$HOST" deploy

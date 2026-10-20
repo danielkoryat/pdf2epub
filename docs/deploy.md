@@ -5,7 +5,7 @@ no limits. **Server mode** turns it into a public site:
 
 - Google sign-in, and every user sees only their own books
 - a monthly page allowance per user, plus pages an admin grants
-- audiobooks, with the voices made by a computer with a GPU elsewhere (see [audiobooks.md](audiobooks.md))
+- audiobooks, read aloud by a voice worker container on the same server (see [audiobooks.md](audiobooks.md))
 - rate limits, size, page and storage limits, and checks that refuse hostile files
 - conversions in a sandboxed worker container with no network and no secrets
 - an admin dashboard (users, sign-ins with address and country, usage, jobs) and an append-only, tamper-evident audit log
@@ -16,8 +16,9 @@ This guide sets it up with Docker on a Linux server behind Caddy and Cloudflare.
 
 ```
 visitor ── Cloudflare ── Caddy (TLS, :443) ── web container (127.0.0.1:5250) ──┐
-                                                                              data volume (SQLite + books)
-                                              worker container (no network) ──┘
+                                                    ▲                         data volume (SQLite + books)
+                                                    │ voice API               │
+                                              voice container   worker container (no network)
 ```
 
 - **web** signs people in, takes uploads and serves the finished books. It holds the secrets.
@@ -26,10 +27,11 @@ visitor ── Cloudflare ── Caddy (TLS, :443) ── web container (127.0.0
   secrets, a read-only filesystem apart from the data volume, no Linux capabilities, and memory, CPU and
   process caps.
 - Both containers use the same image and run as an unprivileged user.
-- **Audiobook voices** are made outside the server, by the voice worker on a computer with a GPU (it can be a
-  laptop at home). It connects to the site like a visitor, through Cloudflare, signing its requests with
-  `PDF2EPUB_VOICE_TOKEN`; see [audiobooks.md](audiobooks.md). An audiobook takes about 21 MB per hour of
-  audio on the data volume.
+- **voice** reads finished books aloud into audiobooks, with BlueTTS on the processor and Microsoft's online
+  Edge voices (Chatterbox needs a GPU and is left out). It has its own image (`voice-worker/Dockerfile`) and
+  volume, never sees the data volume or the uploaded files, and only talks to the web container's voice API,
+  signing its requests with `PDF2EPUB_VOICE_TOKEN`, and to Microsoft for the Edge voices; see
+  [audiobooks.md](audiobooks.md). An audiobook takes about 21 MB per hour of audio on the data volume.
 
 The image works on x86-64 and ARM64 (for example Oracle Cloud's Ampere machines). It needs no GPU. On two ARM
 cores a 300-page scanned book takes roughly 35 to 45 minutes; born-digital PDFs are much faster.
@@ -69,16 +71,19 @@ cp settings.env.example settings.env      # base URL, time zone, limits (nothing
 cp secrets.env.example secrets.env        # session secret, Google client, admin e-mails
 chmod 600 secrets.env
 python3 -c "import secrets; print(secrets.token_urlsafe(48))"   # paste as PDF2EPUB_SESSION_SECRET
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"   # and again as PDF2EPUB_VOICE_TOKEN (audiobooks)
 ```
 
-`settings.env` is read by both containers, `secrets.env` only by the web container. Never put a secret in
-`settings.env`.
+`settings.env` is read by the web and worker containers, `secrets.env` only by the web container. Never put a
+secret in `settings.env`. The voice container gets `voice.env`, which holds the voice token alone and is copied
+from `secrets.env` (by `deploy.sh`, or the command in the next step).
 
 ## 4. Start
 
 ```sh
 cd /opt/pdf2epub/deploy
-docker compose up -d --build     # the first build downloads the models: about 10 minutes
+(umask 077 && grep '^PDF2EPUB_VOICE_TOKEN=' secrets.env > voice.env)
+docker compose up -d --build     # the first build downloads the models: about 15 minutes
 docker compose ps                # web should become "healthy"
 docker compose logs -f
 ```

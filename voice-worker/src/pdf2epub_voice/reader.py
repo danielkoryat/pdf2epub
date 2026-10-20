@@ -67,11 +67,38 @@ class _Progress(threading.Thread):
                 self.lines[:0] = lines
 
 
+class Speeds:
+    """How fast this computer makes each engine and quality ("blue/smooth": times faster than real time), measured
+    on the chapters it reads and kept in a small file. The site uses it to say how long a book will take."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        try:
+            self.totals: dict[str, list[float]] = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.totals = {}
+
+    def add(self, key: str, audio: float, work: float) -> None:
+        a, w = self.totals.get(key, (0.0, 0.0))
+        a, w = a + audio, w + work
+        if a > 36000:  # past ten hours of audio, halve: recent chapters count most
+            a, w = a / 2, w / 2
+        self.totals[key] = [a, w]
+        try:
+            self.path.write_text(json.dumps(self.totals), encoding="utf-8")
+        except OSError as exc:
+            log.warning("Could not save the measured speeds: %s", exc)
+
+    def ratios(self) -> dict[str, float]:
+        return {key: round(a / w, 2) for key, (a, w) in self.totals.items() if w > 0 and a >= 60}
+
+
 class Reader:
-    def __init__(self, client: Client, engines: Engines, cache: Path):
+    def __init__(self, client: Client, engines: Engines, cache: Path, speeds: Speeds | None = None):
         self.client = client
         self.engines = engines
         self.cache = cache
+        self.speeds = speeds
 
     def read(self, job: dict[str, Any]) -> None:
         job_id, o = job["id"], job["options"]
@@ -101,7 +128,10 @@ class Reader:
                     progress.done += size
                 else:
                     progress.done = sum(len(c["title"]) + sum(len(p["text"]) for p in c["paragraphs"]) for c in chapters[:n])
+                    began = time.monotonic()
                     audio = self._chapter(engine, o, lang, chapter, script if n == 0 else None, progress)
+                    if self.speeds is not None:
+                        self.speeds.add(f"{o['engine']}/{o['quality']}", len(audio) / RATE, time.monotonic() - began)
                     tmp = path.with_suffix(".tmp.flac")
                     sf.write(str(tmp), audio, RATE, subtype="PCM_16")
                     tmp.replace(path)

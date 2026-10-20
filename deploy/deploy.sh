@@ -11,7 +11,10 @@ git fetch --quiet origin main
 git merge --ff-only --quiet origin/main
 echo "Building $(git log --oneline -1)"
 docker build --quiet -t pdf2epub:latest . >/dev/null
+docker build --quiet -t pdf2epub-voice:latest voice-worker >/dev/null
 cd deploy
+# The voice worker gets its token and nothing else from secrets.env.
+(umask 077 && grep '^PDF2EPUB_VOICE_TOKEN=' secrets.env > voice.env)
 docker compose up -d
 for _ in $(seq 1 36); do
     if [ "$(docker compose ps web --format '{{.Health}}')" = "healthy" ]; then

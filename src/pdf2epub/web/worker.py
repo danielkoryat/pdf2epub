@@ -30,11 +30,12 @@ from ..enrich import EnrichOptions, EpubPackage, enrich_epub, inspect_epub
 from ..narration import narration_script, save_script
 from ..pipeline import Draft, Options, build, prepare
 from ..validate import check_epub
-from ..voices import estimate
+from ..voices import estimate, measured_speeds
 from .db import Database
 from .jobs import Job, Library
 from .quota import Quota
 from .settings import Settings
+from .voice import online_workers
 
 log = logging.getLogger(__name__)
 
@@ -287,7 +288,8 @@ def _prepare_audio(settings: Settings, library: Library, db: Database, job: Job,
     cover_bytes = pkg.files.get(pkg.item_path(cover)) if cover is not None else None
     if cover_bytes and (cover_bytes[:3] == b"\xff\xd8\xff" or cover_bytes[:8] == b"\x89PNG\r\n\x1a\n"):
         library.audio_cover_path(job).write_bytes(cover_bytes)
-    summary = {"chapters": len(script.chapters), "characters": script.characters, **estimate(script.characters, job.options)}
+    speeds = measured_speeds(online_workers(db) or db.voice_workers())
+    summary = {"chapters": len(script.chapters), "characters": script.characters, **estimate(script.characters, job.options, speeds)}
     log.info("Audiobook text: %d chapters, %d letters", len(script.chapters), script.characters)
     reporter.flush(force=True)
     # attempts start again: they count the voice worker's tries from here on

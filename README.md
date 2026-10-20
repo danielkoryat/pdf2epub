@@ -19,8 +19,8 @@ for any language Tesseract can read.
   metadata, the cover, title and authors, and an EPUB 2 to EPUB 3 upgrade, without touching the book's own text
   and styling.
 * **Audiobooks**: any finished book can be read aloud into an M4B with chapter marks and the cover, in Hebrew
-  or English, with free open-source voices (BlueTTS, Chatterbox) or Microsoft's online voices. The voices are
-  made on a computer with a GPU, which can be your own laptop serving the public site
+  or English, with free open-source voices (BlueTTS, Chatterbox) or Microsoft's online voices. The public site
+  makes them on its own server; the local app makes them on your computer, with its GPU for Chatterbox
   ([docs/audiobooks.md](docs/audiobooks.md)).
 * **Local web UI** with a library of everything you converted (kept in a local SQLite database). There is also
   a CLI.
@@ -67,8 +67,9 @@ landmarks, accessibility metadata, cover, EPUB 3), tick the improvements you wan
 title or author, and download the enriched copy. EPUBCheck runs before and after.
 
 **Audiobook**: *Make audiobook* on a finished book, choose the engine, voice (with a sample), speed and quality,
-and download the M4B when it is ready. The voices come from the voice worker in `voice-worker/`, set up as in
-[docs/audiobooks.md](docs/audiobooks.md); locally `uv run --project voice-worker pdf2epub-voice run` is enough.
+and download the M4B when it is ready. The voices come from the voice worker in `voice-worker/`: install it once
+with `scripts\install-voice-worker.ps1` and the local app starts it whenever it runs
+([docs/audiobooks.md](docs/audiobooks.md)).
 
 The library (title, author, language, status, the edits you made, and the result) is stored in
 `data/pdf2epub.db` (SQLite); the uploaded and produced files are kept in `data/jobs/`.

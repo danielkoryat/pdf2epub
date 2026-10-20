@@ -73,8 +73,8 @@ class Settings:
     allow_guests: bool = True  # server mode: people may convert without signing in, within the guest limits
     turnstile_site_key: str = ""  # Cloudflare Turnstile: a bot check before a guest library is created
     turnstile_secret: str = ""
-    # Audiobooks: who may ask for one (off | admins | everyone), and the token the voice worker (a computer
-    # with a GPU, outside the server) signs its requests with.
+    # Audiobooks: who may ask for one (off | admins | everyone), and the token the voice worker (on the server,
+    # the voice container) signs its requests with.
     audiobooks: str = "admins"
     voice_token: str = ""
     limits: Limits = field(default_factory=Limits)

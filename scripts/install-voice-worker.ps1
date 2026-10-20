@@ -1,17 +1,16 @@
-# Sets up the audiobook voice worker on this computer (Windows, NVIDIA GPU optional) and starts it at every sign-in.
+# Installs the audiobook voice worker for the local app on this computer (Windows, NVIDIA GPU optional).
 #
-#   powershell -ExecutionPolicy Bypass -File scripts\install-voice-worker.ps1 -Url https://pdf2epub.danielkoryat.com
+#   powershell -ExecutionPolicy Bypass -File scripts\install-voice-worker.ps1
 #
-# It asks for the site's voice token (PDF2EPUB_VOICE_TOKEN in the server's secrets.env), installs the worker's
-# own Python environment (voice-worker\, with Chatterbox unless -NoChatterbox), writes the settings to
-# %APPDATA%\pdf2epub-voice\config.json, and registers the task "pdf2epub voice worker" that runs it in the
-# background at sign-in. The log is %LOCALAPPDATA%\pdf2epub-voice\worker.log. To remove it:
-#   Unregister-ScheduledTask -TaskName "pdf2epub voice worker"
+# It installs the worker's own Python environment (voice-worker\, with Chatterbox unless -NoChatterbox). Nothing
+# runs in the background: the local app (the desktop shortcut) starts the worker whenever it runs and stops it
+# when its window is closed, so the audiobooks you make locally use this computer's processor and GPU. The
+# public site makes its audiobooks on its own server.
+#
+# It also removes what earlier versions set up to serve the public site from this computer: the sign-in task
+# "pdf2epub voice worker" and the settings file with the site's token.
 
 param(
-    [string]$Url = "http://127.0.0.1:5050",
-    [string]$Token = "",
-    [string]$Name = $env:COMPUTERNAME,
     [switch]$NoChatterbox
 )
 
@@ -21,8 +20,16 @@ $uv = (Get-Command uv -ErrorAction SilentlyContinue).Source
 if (-not $uv) { throw "uv was not found: install it from https://docs.astral.sh/uv/ first." }
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { throw "ffmpeg was not found on PATH: install it first." }
 
-if (-not $Token -and -not $Url.StartsWith("http://127.0.0.1")) {
-    $Token = Read-Host "Voice worker token for $Url"
+$task = Get-ScheduledTask -TaskName "pdf2epub voice worker" -ErrorAction SilentlyContinue
+if ($task) {
+    Stop-ScheduledTask -TaskName $task.TaskName
+    Unregister-ScheduledTask -TaskName $task.TaskName -Confirm:$false
+    Write-Output "Removed the sign-in task that made voices for the public site"
+}
+$config = Join-Path $env:APPDATA "pdf2epub-voice\config.json"
+if (Test-Path $config) {
+    Remove-Item $config
+    Write-Output "Removed $config"
 }
 
 Write-Output "Installing the voice worker's environment (the first time this downloads a few GB)..."
@@ -31,20 +38,5 @@ if (-not $NoChatterbox) { $extra = @("--extra", "chatterbox") }
 & $uv sync --project $project @extra
 if ($LASTEXITCODE -ne 0) { throw "uv sync failed" }
 
-$configDir = Join-Path $env:APPDATA "pdf2epub-voice"
-New-Item -ItemType Directory -Force $configDir | Out-Null
-$config = @{ url = $Url; token = $Token; name = $Name } | ConvertTo-Json
-[IO.File]::WriteAllText((Join-Path $configDir "config.json"), $config)  # UTF-8 without a byte order mark
-
-# pythonw: no console window. The worker keeps Windows awake while it reads a book.
-$pythonw = Join-Path $project ".venv\Scripts\pythonw.exe"
-$action = New-ScheduledTaskAction -Execute $pythonw -Argument "-X utf8 -m pdf2epub_voice run" -WorkingDirectory $project
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) `
-    -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew
-Register-ScheduledTask -TaskName "pdf2epub voice worker" -Action $action -Trigger $trigger -Settings $settings `
-    -Description "Makes the voices of pdf2epub audiobooks" -Force | Out-Null
-Start-ScheduledTask -TaskName "pdf2epub voice worker"
-
 & (Join-Path $project ".venv\Scripts\pdf2epub-voice.exe") check
-Write-Output "The voice worker is running and will start at every sign-in. Log: $(Join-Path $env:LOCALAPPDATA 'pdf2epub-voice\worker.log')"
+Write-Output "Done. The local app (the desktop shortcut) now makes audiobook voices on this computer while it runs."

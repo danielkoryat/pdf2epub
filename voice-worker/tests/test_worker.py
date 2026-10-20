@@ -13,7 +13,7 @@ import pytest
 
 from pdf2epub_voice.audio import RATE, ChapterAudio, ffmetadata
 from pdf2epub_voice.client import Client, Gone
-from pdf2epub_voice.reader import Reader
+from pdf2epub_voice.reader import Reader, Speeds
 from pdf2epub_voice.text import chunks, intro, sentences, strip_niqqud, tag_latin
 
 def _png() -> bytes:
@@ -121,8 +121,10 @@ def test_reading_a_book(tmp_path: Path):
     site = FakeSite()
     tone = Tone()
     client = Client("https://site.test", "t" * 40, "laptop", transport=httpx.MockTransport(site))
-    Reader(client, Engines(tone), tmp_path).read(client.claim(["blue"], {}))
+    speeds = Speeds(tmp_path / "speeds.json")
+    Reader(client, Engines(tone), tmp_path, speeds).read(client.claim(["blue"], {}))
     assert site.finished and site.finished["chapters"] == 2
+    assert list(speeds.totals) == ["blue/fast"]
     data = b"".join(site.parts[i] for i in sorted(site.parts))
     assert hashlib.sha256(data).hexdigest() == site.finished["sha256"] and data[4:8] == b"ftyp"
     spoken = [t for t, _ in tone.calls]
@@ -136,6 +138,14 @@ def test_reading_a_book(tmp_path: Path):
     assert probe["format"]["tags"]["title"] == "Test Book" and probe["format"]["tags"]["genre"] == "Audiobook"
     assert any(s["codec_type"] == "video" and s["disposition"]["attached_pic"] for s in probe["streams"])  # the cover
     assert not any(tmp_path.glob("job1-*"))  # the work folder is cleaned up
+
+
+def test_speeds_are_measured_and_kept(tmp_path: Path):
+    speeds = Speeds(tmp_path / "speeds.json")
+    speeds.add("blue/smooth", 30, 60)
+    assert speeds.ratios() == {}  # too little to go by
+    speeds.add("blue/smooth", 90, 240)
+    assert Speeds(tmp_path / "speeds.json").ratios() == {"blue/smooth": 0.4}
 
 
 @needs_ffmpeg

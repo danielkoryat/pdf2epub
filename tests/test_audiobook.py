@@ -209,6 +209,30 @@ def test_a_sleeping_voice_worker_gets_its_job_back(tmp_path: Path):
     assert site.db.claim_job("server-worker") is None
 
 
+def test_only_engines_the_voice_worker_has_are_accepted(tmp_path: Path):
+    site = _site(tmp_path)
+    admin = site.client("admin@example.com")
+    source = _done_book(site, admin)
+    chatterbox = {"engine": "chatterbox", "voice": "noa"}
+    # With no voice worker online, any engine may wait for one.
+    first = admin.post(f"/api/jobs/{source}/audiobook", json=chatterbox)
+    assert first.status_code == 200, first.text
+    _prepare(site, first.json()["id"])
+    # The server's voice worker has no GPU: it leaves that one alone, and no more are taken.
+    info = {"speeds": {"blue/smooth": 0.45, "bad": "x"}}
+    assert _voice(site, name="server").post("/api/voice/claim", json={"engines": ["blue", "edge"], "info": info}).status_code == 204
+    voices = admin.get("/api/voices").json()
+    assert voices["online_engines"] == ["blue", "edge"]
+    blue = next(e for e in voices["engines"] if e["id"] == "blue")
+    assert {q["id"]: q["factor"] for q in blue["qualities"]} == {"smooth": 0.45, "fast": 5.0}  # as measured, else typical
+    assert admin.post(f"/api/jobs/{source}/audiobook", json=chatterbox).status_code == 400
+    blue = admin.post(f"/api/jobs/{source}/audiobook", json={"engine": "blue", "voice": "noa", "speed": 1, "quality": "smooth"})
+    assert blue.status_code == 200
+    _prepare(site, blue.json()["id"])
+    summary = admin.get(f"/api/jobs/{blue.json()['id']}").json()["summary"]
+    assert abs(summary["making_seconds"] - summary["audio_seconds"] / 0.45) < 3  # the estimate uses the measured speed
+
+
 def test_voice_api_is_off_without_a_token(tmp_path: Path):
     site = Site(tmp_path)  # server mode, no PDF2EPUB_VOICE_TOKEN
     assert TestClient(site.app, base_url=BASE).post("/api/voice/claim", json={"engines": ["blue"]}).status_code == 404

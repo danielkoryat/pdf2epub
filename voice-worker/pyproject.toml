@@ -1,7 +1,7 @@
 [project]
 name = "pdf2epub-voice"
 version = "0.1.0"
-description = "Makes the voices of pdf2epub audiobooks on a computer with a GPU, for a pdf2epub site or the local app"
+description = "Makes the voices of pdf2epub audiobooks, on the pdf2epub server or next to the local app"
 license = "AGPL-3.0-or-later"
 # BlueTTS's Hebrew front end (renikud-plus) needs Python 3.12; Chatterbox pins numpy below 2.
 requires-python = ">=3.12,<3.13"

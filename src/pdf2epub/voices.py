@@ -1,7 +1,7 @@
 """The voices an audiobook can be read with, and checking a request for one.
 
-The voices themselves are made by the voice worker (voice-worker/ in this repository), on a computer with a GPU
-outside the server. This catalog is what the web app offers and accepts; the worker knows how to make each one.
+The voices themselves are made by the voice worker (voice-worker/ in this repository): on the server by the voice
+container (BlueTTS and Edge, no GPU), locally on the user's computer. This catalog is what the web app offers and accepts; the worker knows how to make each one.
 
 Engines:
   * blue: BlueTTS (open source, MIT code). Hebrew and English. Runs on the processor: about 5x real time at the
@@ -76,15 +76,28 @@ def sample_url(engine: str, voice: str, language: str) -> str | None:
     return f"/static/voices/{name}" if (STATIC / "voices" / name).is_file() else None
 
 
-def catalog() -> dict:
-    """The engines and voices for the browser, with a sample to play where one exists."""
+def measured_speeds(workers: list[dict]) -> dict[str, float]:
+    """How many times faster than real time the voice workers make each engine and quality ("blue/smooth"), as
+    they measure it on the books they read (the server's processor is much slower than a laptop's GPU)."""
+    speeds: dict[str, float] = {}
+    for worker in workers:
+        for key, value in ((worker.get("info") or {}).get("speeds") or {}).items():
+            if isinstance(value, (int, float)) and 0 < value < 1000:
+                speeds[key] = max(speeds.get(key, 0.0), float(value))
+    return speeds
+
+
+def catalog(speeds: dict[str, float] | None = None) -> dict:
+    """The engines and voices for the browser, with a sample to play where one exists, and how fast each quality
+    is made (measured by the voice workers where they have, else typical figures)."""
+    speeds = speeds or {}
     engines = []
     for key, engine in ENGINES.items():
         voices = []
         for v in engine["voices"]:
             langs = [v["language"]] if "language" in v else engine["languages"]
             voices.append({**v, "languages": langs, "samples": {lang: sample_url(key, v["id"], lang) for lang in langs}})
-        qualities = [{"id": q, "label": QUALITY_LABELS[q], "factor": f} for q, f in engine["qualities"].items()]
+        qualities = [{"id": q, "label": QUALITY_LABELS[q], "factor": speeds.get(f"{key}/{q}", f)} for q, f in engine["qualities"].items()]
         engines.append({"id": key, "label": engine["label"], "about": engine["about"], "languages": engine["languages"],
                         "voices": voices, "qualities": qualities})
     return {"engines": engines, "speeds": list(SPEEDS), "default": DEFAULT}
@@ -115,8 +128,8 @@ def validate_options(data: dict, language: str) -> dict:
     return {"engine": engine, "voice": voice["id"], "speed": speed, "quality": quality, "language": language}
 
 
-def estimate(characters: int, options: dict) -> dict:
+def estimate(characters: int, options: dict, speeds: dict[str, float] | None = None) -> dict:
     """How long the audiobook will be, and how long making it will take (seconds)."""
     length = characters / CHARS_PER_SECOND[options["language"]] / options["speed"]
-    factor = ENGINES[options["engine"]]["qualities"][options["quality"]]
+    factor = (speeds or {}).get(f"{options['engine']}/{options['quality']}") or ENGINES[options["engine"]]["qualities"][options["quality"]]
     return {"audio_seconds": round(length), "making_seconds": round(length / factor)}

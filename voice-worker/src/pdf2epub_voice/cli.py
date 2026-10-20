@@ -6,7 +6,8 @@
   pdf2epub-voice say --engine blue --voice noa --lang he "שלום" -o out.mp3
 
 The site and token come from the command line, else PDF2EPUB_VOICE_URL / PDF2EPUB_VOICE_TOKEN, else the config
-file (%APPDATA%\\pdf2epub-voice\\config.json on Windows, ~/.config/pdf2epub-voice/config.json elsewhere).
+file (%APPDATA%\\pdf2epub-voice\\config.json on Windows, ~/.config/pdf2epub-voice/config.json elsewhere). The local
+app starts `run` itself; the server runs it in the voice container (Dockerfile).
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -39,10 +41,19 @@ def config_dir() -> Path:
 
 
 def data_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") if os.name == "nt" else os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))
-    path = Path(base or Path.home()) / "pdf2epub-voice"
+    """Work files and the log: PDF2EPUB_VOICE_DATA, else the user's application data folder."""
+    if os.environ.get("PDF2EPUB_VOICE_DATA"):
+        path = Path(os.environ["PDF2EPUB_VOICE_DATA"])
+    else:
+        base = os.environ.get("LOCALAPPDATA") if os.name == "nt" else os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))
+        path = Path(base or Path.home()) / "pdf2epub-voice"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def models_dir() -> Path:
+    """The voice models: PDF2EPUB_VOICE_MODELS (the server image keeps them in the image), else in data_dir()."""
+    return Path(os.environ.get("PDF2EPUB_VOICE_MODELS") or data_dir() / "models")
 
 
 def load_config() -> dict:
@@ -73,8 +84,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     from .client import AuthError, Client, Gone
     from .engines import Engines, installed
     from .keepawake import keep_awake
-    from .reader import Reader
+    from .reader import Reader, Speeds
 
+    if args.with_app:
+        threading.Thread(target=_exit_with_app, daemon=True).start()
     cfg = load_config()
     url = args.url or os.environ.get("PDF2EPUB_VOICE_URL") or cfg.get("url") or "http://127.0.0.1:5050"
     token = args.token or os.environ.get("PDF2EPUB_VOICE_TOKEN") or cfg.get("token") or ""
@@ -86,12 +99,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         log.error("No voice engine is installed (found: %s)", ", ".join(available) or "none")
         return 2
     client = Client(url, token, name)
-    reader = Reader(client, Engines(data_dir() / "models", available), data_dir() / "jobs")  # Chatterbox may need BlueTTS
+    speeds = Speeds(data_dir() / "speeds.json")
+    reader = Reader(client, Engines(models_dir(), available), data_dir() / "jobs", speeds)  # Chatterbox may need BlueTTS
     info = {"version": __version__, "gpu": _gpu()}
     log.info("Voice worker %s for %s, engines: %s", name, url, ", ".join(engines))
     while True:
         try:
-            job = client.claim(engines, info)
+            job = client.claim(engines, {**info, "speeds": speeds.ratios()})
         except AuthError as exc:
             log.error("%s: check the token", exc)
             return 2
@@ -119,6 +133,17 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 0
 
 
+def _exit_with_app() -> None:
+    """Started by the local app, which holds this worker's standard input open while it runs: when the app stops
+    in any way (its window closed, a crash), the input ends and the worker stops with it."""
+    try:
+        sys.stdin.buffer.read()
+    except (OSError, ValueError, AttributeError):
+        pass
+    log.info("The app has stopped; so does the voice worker")
+    os._exit(0)  # chapters already read are kept, and the job goes back to the queue on the site
+
+
 def cmd_check(args: argparse.Namespace) -> int:
     from .audio import ffmpeg
     from .engines import installed
@@ -133,7 +158,8 @@ def cmd_check(args: argparse.Namespace) -> int:
     cfg = load_config()
     print(f"Site: {cfg.get('url') or os.environ.get('PDF2EPUB_VOICE_URL') or 'http://127.0.0.1:5050 (default)'}")
     print(f"Config: {config_dir() / 'config.json'}")
-    print(f"Models, work files and log: {data_dir()}")
+    print(f"Models: {models_dir()}")
+    print(f"Work files and log: {data_dir()}")
     return 0
 
 
@@ -144,7 +170,7 @@ def cmd_samples(args: argparse.Namespace) -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     names = args.engines.split(",") if args.engines else installed()
-    engines = Engines(data_dir() / "models", names)
+    engines = Engines(models_dir(), names)
     for name in names:
         engine = engines.get(name)
         for lang, voices in VOICES[name].items():
@@ -162,7 +188,7 @@ def cmd_say(args: argparse.Namespace) -> int:
     from .audio import to_mp3
     from .engines import Engines, installed
 
-    engines = Engines(data_dir() / "models", installed())  # Chatterbox copies its voices from BlueTTS
+    engines = Engines(models_dir(), installed())  # Chatterbox copies its voices from BlueTTS
     started = time.monotonic()
     audio = engines.get(args.engine).synthesize(args.text, args.lang, args.voice, args.speed, args.quality)
     to_mp3(audio, Path(args.output))
@@ -193,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--engines", help="comma-separated engines to offer (default: all installed)")
     run.add_argument("--poll", type=float, default=15.0, help="seconds between looks for new jobs (default: 15)")
     run.add_argument("--once", action="store_true", help="read at most one book, then exit")
+    run.add_argument("--with-app", action="store_true", help="exit when standard input closes (how the local app starts it)")
     sub.add_parser("check", help="show what is installed")
     samples = sub.add_parser("samples", help="make the voice samples the site plays")
     samples.add_argument("--out", required=True)

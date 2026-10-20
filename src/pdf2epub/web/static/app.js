@@ -392,7 +392,7 @@ async function removeJob(job) {
 
 /* ---------------------------------------------------------------- audiobooks */
 
-// The voices on offer and whether the computer that makes them (the voice worker) is online.
+// The voices on offer and whether the voice worker that makes them is online.
 let VOICES = null;
 
 async function loadVoices() {
@@ -438,7 +438,7 @@ function audioCard(job) {
     let text;
     if (job.status === "queued" && speaking) {
       const online = VOICES?.online && VOICES.online_engines.includes(job.options?.engine);
-      text = !online ? "Waiting for the computer that makes the voices to come online"
+      text = !online ? "Waiting for the voice worker to come online"
         : job.queue_position > 1 ? `${job.queue_position - 1} audiobooks ahead` : "Starting soon";
       if (job.summary) text += ` · making it takes about ${fmtLength(job.summary.making_seconds)}`;
     } else if (job.status === "queued") {
@@ -463,7 +463,8 @@ async function openAudiobook(job) {
   const lang = (job.language || "").split("-")[0];
   $("#ab-book").textContent = job.title || job.filename;
   $("#ab-error").classList.add("hidden");
-  const engines = VOICES.engines.filter(e => e.languages.includes(lang));
+  // Only the engines the voice worker can make (the site's has no GPU for Chatterbox); all of them while it is away.
+  const engines = VOICES.engines.filter(e => e.languages.includes(lang) && (!VOICES.online || VOICES.online_engines.includes(e.id)));
   if (!engines.length) {
     $("#ab-error").textContent = "Audiobooks can be made of Hebrew and English books.";
     $("#ab-error").classList.remove("hidden");
@@ -498,8 +499,8 @@ function describeAudiobook() {
   const quality = engine?.qualities.find(q => q.id === $("#ab-quality").value) || engine?.qualities[0];
   const hours = quality ? 10 / quality.factor : 0;
   let text = quality ? `A 10-hour book takes about ${hours < 1 ? `${Math.round(hours * 60)} minutes` : `${Math.round(hours * 10) / 10} hours`} to make.` : "";
-  if (!VOICES.online) text += " The computer that makes the voices is offline right now; the audiobook will wait in the queue until it connects.";
-  else if (engine && !VOICES.online_engines.includes(engine.id)) text += ` The computer that makes the voices doesn't have ${engine.label} installed.`;
+  if (!VOICES.online) text += " The voice worker is offline right now; the audiobook will wait in the queue until it is back.";
+  else if (engine && !VOICES.online_engines.includes(engine.id)) text += ` The voice worker can't make ${engine.label} voices.`;
   $("#ab-estimate").textContent = text;
 }
 

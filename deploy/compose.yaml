@@ -1,4 +1,5 @@
-# pdf2epub on a server: the web app and a sandboxed conversion worker. See docs/deploy.md.
+# pdf2epub on a server: the web app, a sandboxed conversion worker and the audiobook voice worker. See
+# docs/deploy.md.
 #
 #   cd deploy && docker compose up -d --build
 #
@@ -6,7 +7,10 @@
 # worker  opens the uploaded files. It has no network at all, never sees a secret, cannot write outside the
 #         data volume and /tmp, and is capped in memory and processes. Each job runs in its own child process
 #         with a time limit.
-# Both run as an unprivileged user with every Linux capability dropped and a read-only root filesystem.
+# voice   reads finished books aloud (docs/audiobooks.md). It talks to the web app over the voice API with its
+#         token, never sees the uploaded files or the data volume, and reaches the internet only for
+#         Microsoft's Edge voices.
+# All run as an unprivileged user with every Linux capability dropped and a read-only root filesystem.
 
 name: pdf2epub
 
@@ -66,8 +70,30 @@ services:
       web:
         condition: service_started
 
+  voice:
+    <<: *sandbox
+    image: pdf2epub-voice:latest
+    build:
+      context: ../voice-worker
+    command: ["pdf2epub-voice", "run", "--url", "http://web:5250", "--name", "server"]
+    env_file: [voice.env] # PDF2EPUB_VOICE_TOKEN only; deploy.sh copies it from secrets.env
+    volumes:
+      - voice:/data # finished chapters, so a restart continues a book where it stopped
+    tmpfs:
+      - /tmp:size=256m,mode=1777,exec # the English phonemizer loads a copy of espeak-ng from here
+    networks: [web]
+    mem_limit: 3g
+    memswap_limit: 3g
+    cpus: 1.5
+    pids_limit: 128
+    stop_grace_period: 20s
+    depends_on:
+      web:
+        condition: service_started
+
 volumes:
   data:
+  voice:
 
 networks:
   web:

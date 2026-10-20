@@ -1,10 +1,11 @@
 """The web app: `pdf2epub-web` serves http://127.0.0.1:5050 by default.
 
 Converts PDFs to EPUB, enriches existing EPUB files, and turns finished books into audiobooks (the voices are made
-by a voice worker on a computer with a GPU, see voice.py). In local mode it is a personal tool (no sign-in, the
-worker runs inside it). In server mode (PDF2EPUB_MODE=server) it is a public website: Google sign-in, every user
-sees only their own books, rate limits and page allowances, an admin dashboard and an audit log; conversions run
-in the separate sandboxed `pdf2epub-worker`. See settings.py for the configuration.
+by a voice worker, see voice.py). In local mode it is a personal tool (no sign-in, the worker runs inside it, and
+it starts this computer's voice worker when one is installed). In server mode (PDF2EPUB_MODE=server) it is a
+public website: Google sign-in, every user sees only their own books, rate limits and page allowances, an admin
+dashboard and an audit log; conversions run in the separate sandboxed `pdf2epub-worker` and the voices in the
+voice container. See settings.py for the configuration.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import os
 import re
 import shutil
 import socket
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -32,7 +34,7 @@ from .. import config
 from ..edit import chapter_preview, chapter_summaries
 from ..model import Kind
 from ..validate import epubcheck_available
-from ..voices import catalog, validate_options
+from ..voices import catalog, measured_speeds, validate_options
 from . import admin as admin_api
 from . import voice as voice_api
 from .auth import Auth
@@ -429,7 +431,7 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
         if not audiobooks_for(user):
             raise HTTPException(404, "Not found")
         workers = voice_api.online_workers(db)
-        return {**catalog(), "online": bool(workers), "online_engines": sorted({e for w in workers for e in w["engines"]})}
+        return {**catalog(measured_speeds(workers)), "online": bool(workers), "online_engines": sorted({e for w in workers for e in w["engines"]})}
 
     @app.post("/api/jobs/{job_id}/audiobook")
     def make_audiobook(job_id: str, body: AudiobookBody, request: Request, user: dict = Depends(writer)) -> dict:
@@ -443,6 +445,9 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
             options = validate_options(body.model_dump(), source.language)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
+        workers = voice_api.online_workers(db)
+        if workers and not any(options["engine"] in w["engines"] for w in workers):
+            raise HTTPException(400, "Those voices can't be made here. Please choose another voice engine.")
         if settings.server and user["role"] != "admin":
             since = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
             if library.jobs_since(user["id"], since, kind="audio") >= limits.audiobooks_per_day:
@@ -528,6 +533,34 @@ def _open_when_ready(url: str, timeout: float = 60.0) -> None:
         time.sleep(0.3)
 
 
+def _voice_worker_python() -> Path | None:
+    """The voice worker's Python (voice-worker/.venv in this checkout), if it is installed."""
+    venv = config.PROJECT_ROOT / "voice-worker" / ".venv"
+    python = venv / "Scripts" / "python.exe" if os.name == "nt" else venv / "bin" / "python"
+    return python if python.is_file() else None
+
+
+_voice_worker: subprocess.Popen | None = None  # kept, so its standard input stays open while the app runs
+
+
+def _start_voice_worker(python: Path, url: str) -> None:
+    """Local mode: make the audiobook voices on this computer while the app runs. The worker stops when its
+    standard input closes, which happens when this process ends in any way. It starts once the app answers, so
+    its first look for work does not fail."""
+    import time
+
+    global _voice_worker
+
+    deadline = time.monotonic() + 60
+    while not _is_pdf2epub(url):
+        if time.monotonic() > deadline:
+            return
+        time.sleep(0.5)
+    _voice_worker = subprocess.Popen([str(python), "-X", "utf8", "-m", "pdf2epub_voice", "run", "--url", url, "--with-app"],
+                                     cwd=python.parents[2], stdin=subprocess.PIPE)
+    print("The voice worker is making audiobook voices on this computer")
+
+
 def main(argv: list[str] | None = None) -> int:
     import uvicorn
 
@@ -536,6 +569,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=int(os.environ.get("PDF2EPUB_PORT", DEFAULT_PORT)))
     p.add_argument("--data", type=Path, default=None, help="data folder (default: PDF2EPUB_DATA or ./data)")
     p.add_argument("--no-browser", action="store_true", help="don't open the browser")
+    p.add_argument("--no-voice-worker", action="store_true",
+                   help="local mode: don't start this computer's voice worker (voice-worker/.venv) for audiobooks")
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s", datefmt="%H:%M:%S")
@@ -565,6 +600,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"pdf2epub ({settings.mode} mode) is running at {settings.base_url if settings.server else url}  (close this window or press Ctrl+C to stop)")
     if not args.no_browser and not settings.server:
         threading.Thread(target=_open_when_ready, args=(url,), daemon=True).start()
+    if not settings.server and not args.no_voice_worker and (python := _voice_worker_python()):
+        threading.Thread(target=_start_voice_worker, args=(python, url), daemon=True).start()
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning", proxy_headers=False, server_header=False)
     return 0
 

@@ -1,6 +1,8 @@
 # Creates a "PDF to EPUB" shortcut on the desktop (Windows).
 # Double-clicking it starts the pdf2epub web UI in a minimized window and opens it in the browser;
-# if it is already running, it just opens the page. Close the window to stop the server.
+# if it is already running, it just opens the page. Everything runs on this computer: conversions, and the
+# audiobook voices too once the voice worker is installed (scripts\install-voice-worker.ps1). Close the window
+# to stop the server.
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\create-desktop-shortcut.ps1
 

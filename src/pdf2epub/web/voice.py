@@ -1,8 +1,9 @@
 """The voice worker's API (/api/voice): how audiobooks get their voices.
 
-Making voices needs a GPU, which the server doesn't have. A voice worker (voice-worker/ in this repository) runs
-on a computer that has one, anywhere: it connects out to the site, so nothing at its end has to be reachable.
-It takes an audiobook job that is waiting for voices, downloads the text to read (script.json, made by the
+The voices are made by a voice worker (voice-worker/ in this repository), a separate program with its own Python
+environment: on the server, the voice container next to the web app; locally, the worker the app starts on the
+same computer (with its GPU, if it has one). It connects to the site's API, so nothing at its end has to be
+reachable. It takes an audiobook job that is waiting for voices, downloads the text to read (script.json, made by the
 server's sandboxed worker) and the cover, reports progress while it reads (which also serves as the job's
 heartbeat), uploads the finished M4B in parts (Cloudflare refuses request bodies over 100 MB) and finishes.
 

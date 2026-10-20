@@ -32,7 +32,12 @@ class BlueEngine:
         from huggingface_hub import snapshot_download
 
         self.dir = models / "blue"
-        onnx_dir = Path(snapshot_download(MODEL_REPO, revision=MODEL_REVISION, local_dir=self.dir / "onnx"))
+        onnx_dir = self.dir / "onnx"
+        # Checked once: the download takes locks inside the folder, which is read-only in the server image.
+        complete = onnx_dir / f".complete-{MODEL_REVISION}"
+        if not complete.is_file():
+            snapshot_download(MODEL_REPO, revision=MODEL_REVISION, local_dir=onnx_dir)
+            complete.touch()
         self.tts = load_text_to_speech(str(onnx_dir))
         self.rate = self.tts.sample_rate
         self._styles: dict[str, object] = {}

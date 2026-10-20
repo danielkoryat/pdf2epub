@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 MODEL_REPO = "notmax123/BlueTTS2.5-onnx"
 MODEL_REVISION = "468da64b4a51795a7594a3637727dbaf876b6df2"
 REPO_COMMIT = "0e38dbf08ed53f85863d1eab092bd9572c53a503"  # keep in step with pyproject.toml
-STEPS = {"fast": 5, "smooth": 32}  # refinement steps: more is smoother and slower
+STEPS = 32  # refinement steps: more is smoother and slower
 
 
 class BlueEngine:
@@ -61,7 +61,7 @@ class BlueEngine:
 
         if lang == "he":
             text = tag_latin(strip_niqqud(text))
-        audio, _ = self.tts(text, lang=lang, style=self.style(voice), total_step=STEPS.get(quality, 32), speed=speed,
+        audio, _ = self.tts(text, lang=lang, style=self.style(voice), total_step=STEPS, speed=speed,
                             cfg_scale=4.0, silence_duration=PAUSE_SENTENCE)
         audio = np.asarray(audio, dtype=np.float32)
         if audio.ndim == 2:

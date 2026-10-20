@@ -145,6 +145,7 @@ def test_audiobook_from_request_to_download(tmp_path: Path):
     assert res.status_code == 200, res.text
     audio = res.json()
     assert audio["kind"] == "audio" and audio["options"]["voice"] == "lily" and audio["options"]["source"] == source
+    assert audio["options"]["quality"] == "smooth"  # the only quality BlueTTS offers
     assert admin.post(f"/api/jobs/{source}/audiobook", json={"engine": "edge", "voice": "en-US-AvaNeural"}).status_code == 400
 
     _prepare(site, audio["id"])
@@ -224,7 +225,7 @@ def test_only_engines_the_voice_worker_has_are_accepted(tmp_path: Path):
     voices = admin.get("/api/voices").json()
     assert voices["online_engines"] == ["blue", "edge"]
     blue = next(e for e in voices["engines"] if e["id"] == "blue")
-    assert {q["id"]: q["factor"] for q in blue["qualities"]} == {"smooth": 0.45, "fast": 5.0}  # as measured, else typical
+    assert {q["id"]: q["factor"] for q in blue["qualities"]} == {"smooth": 0.45}  # as measured
     assert admin.post(f"/api/jobs/{source}/audiobook", json=chatterbox).status_code == 400
     blue = admin.post(f"/api/jobs/{source}/audiobook", json={"engine": "blue", "voice": "noa", "speed": 1, "quality": "smooth"})
     assert blue.status_code == 200

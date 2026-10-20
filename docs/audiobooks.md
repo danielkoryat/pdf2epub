@@ -8,12 +8,12 @@ BookPlayer, Smart AudioBook Player, VLC) open as a book. Hebrew and English.
 
 | Engine | What it is | Speed on a laptop (RTX 2000 Ada) | On the site's server (2 ARM cores) | License |
 |---|---|---|---|---|
-| **BlueTTS** (default) | Open-source model by the authors of Phonikud. Natural Hebrew; reads numbers, dates and English words inside Hebrew. Voices: Noa, Lily, Daniel, Adam. | "Smooth" about 2.5x faster than real time, "fast" about 5x, on the processor | "Smooth" about half of real time, "fast" about 2x faster than real time | Code MIT; the model files state no license |
+| **BlueTTS** (default) | Open-source model by the authors of Phonikud. Natural Hebrew; reads numbers, dates and English words inside Hebrew. Voices: Noa, Lily, Daniel, Adam. | about 2.5x faster than real time, on the processor | about half of real time | Code MIT; the model files state no license |
 | **Chatterbox** | Resemble AI's open multilingual model, on the GPU. Livelier, slower. Its voices copy BlueTTS's voices of the same name from a short recording. | about real time | not offered (no GPU) | MIT |
 | **Microsoft Edge voices** | Microsoft's online read-aloud voices (Hila and Avri in Hebrew; Ava, Andrew, Sonia and Ryan in English). | many times faster than real time | the same | Free, but an unofficial use of Microsoft's service that may change or stop |
 
 A 200-page book is about 300,000 letters: roughly 7 hours of Hebrew audio (5 in English). With BlueTTS on
-"smooth" it takes about 3 hours to make on the laptop and about 13 on the server ("fast": about 4); with
+it takes about 3 hours to make on the laptop and about 13 on the server; with
 Chatterbox on the laptop about 7 to 8. The voice worker measures its own speed on every chapter and the site
 bases its estimates on that.
 

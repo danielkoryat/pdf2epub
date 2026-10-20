@@ -82,7 +82,7 @@ class FakeSite:
         if self.deleted and "/jobs/" in path:
             return httpx.Response(404, json={"detail": "No such job"})
         if path == "/api/voice/claim":
-            return httpx.Response(200, json={"id": "job1", "title": "Test Book", "options": {"engine": "blue", "voice": "noa", "speed": 1.0, "quality": "fast"},
+            return httpx.Response(200, json={"id": "job1", "title": "Test Book", "options": {"engine": "blue", "voice": "noa", "speed": 1.0, "quality": "smooth"},
                                              "has_cover": True, "attempts": 1})
         if path.endswith("/cover"):
             return httpx.Response(200, content=PNG, headers={"Content-Type": "image/png"})
@@ -124,7 +124,7 @@ def test_reading_a_book(tmp_path: Path):
     speeds = Speeds(tmp_path / "speeds.json")
     Reader(client, Engines(tone), tmp_path, speeds).read(client.claim(["blue"], {}))
     assert site.finished and site.finished["chapters"] == 2
-    assert list(speeds.totals) == ["blue/fast"]
+    assert list(speeds.totals) == ["blue/smooth"]
     data = b"".join(site.parts[i] for i in sorted(site.parts))
     assert hashlib.sha256(data).hexdigest() == site.finished["sha256"] and data[4:8] == b"ftyp"
     spoken = [t for t, _ in tone.calls]

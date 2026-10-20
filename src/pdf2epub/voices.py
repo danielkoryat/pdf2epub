@@ -4,8 +4,8 @@ The voices themselves are made by the voice worker (voice-worker/ in this reposi
 container (BlueTTS and Edge, no GPU), locally on the user's computer. This catalog is what the web app offers and accepts; the worker knows how to make each one.
 
 Engines:
-  * blue: BlueTTS (open source, MIT code). Hebrew and English. Runs on the processor: about 5x real time at the
-    "fast" quality and 2.5x at "smooth" (32 refinement steps instead of 5).
+  * blue: BlueTTS (open source, MIT code). Hebrew and English. Runs on the processor, with 32 refinement steps
+    (the "smooth" quality): about 2.5x real time on a laptop, about half of real time on the server.
   * chatterbox: Chatterbox Multilingual (open source, MIT). Hebrew and English, on the GPU at about real time.
     Its voices are copied from a short BlueTTS recording of the voice of the same name.
   * edge: Microsoft Edge's online read-aloud voices. Free and fast, but an unofficial service that may change.
@@ -32,7 +32,7 @@ ENGINES: dict[str, dict] = {
             {"id": "daniel", "label": "Daniel", "gender": "male"},
             {"id": "adam", "label": "Adam", "gender": "male"},
         ],
-        "qualities": {"smooth": 2.5, "fast": 5.0},  # quality -> times faster than real time
+        "qualities": {"smooth": 2.5},  # quality -> times faster than real time (on a laptop)
     },
     "chatterbox": {
         "label": "Chatterbox",
@@ -62,7 +62,7 @@ ENGINES: dict[str, dict] = {
         "qualities": {"standard": 30.0},
     },
 }
-QUALITY_LABELS = {"smooth": "Smooth (slower to make)", "fast": "Fast", "standard": "Standard"}
+QUALITY_LABELS = {"smooth": "Smooth", "standard": "Standard"}
 SPEEDS = (0.8, 0.9, 1.0, 1.1, 1.2)
 DEFAULT = {"engine": "blue", "voice": "noa", "speed": 0.9, "quality": "smooth"}
 

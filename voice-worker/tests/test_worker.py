@@ -167,3 +167,26 @@ def test_a_deleted_job_stops(tmp_path: Path):
     except Gone:
         pass
     assert site.finished is None and not site.parts
+
+
+def test_blue_reads_long_paragraphs_in_pieces():
+    # BlueTTS's Hebrew front end refuses more than 2,046 letters at once: longer paragraphs go in sentence groups.
+    from pdf2epub_voice.engines.blue import MAX_PIECE, BlueEngine
+
+    asked: list[str] = []
+
+    def tts(text, **kwargs):
+        asked.append(text)
+        return np.ones((1, 100), dtype=np.float32), None
+
+    engine = object.__new__(BlueEngine)
+    engine.tts, engine.rate, engine._styles = tts, RATE, {"noa": None}
+    sentence = "זה משפט ארוך למדי על ההיסטוריה של New York ושל העולם כולו."
+    paragraph = " ".join([sentence] * 60)  # about 3,500 letters
+    audio = engine.synthesize(paragraph, "he", "noa", 1.0, "smooth")
+    assert len(asked) > 1 and all(len(a) <= MAX_PIECE + 50 for a in asked)
+    assert all("<en>New York</en>" in a for a in asked)  # tags are added after splitting, never cut in half
+    assert len(audio) > len(asked) * 100  # the pieces, with a pause between each
+    asked.clear()
+    engine.synthesize(sentence, "he", "noa", 1.0, "smooth")
+    assert asked == [tag_latin(sentence)]  # an ordinary paragraph is read as before

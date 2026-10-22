@@ -112,6 +112,19 @@ def test_upload_review_build_download(tmp_path: Path):
     with zipfile.ZipFile(io.BytesIO(res.content)) as z:
         assert "The Start" in z.read("EPUB/nav.xhtml").decode()
 
+    # A new cover for a book that was built without one, and the author typed on the page.
+    from test_enrich import PNG
+
+    assert client.post(f"/api/jobs/{job['id']}/cover", files={"file": ("c.png", PNG, "image/png")}).status_code == 200
+    draft = client.get(f"/api/jobs/{job['id']}/draft").json()
+    assert draft["has_cover"] and draft["new_cover"] and client.get(f"/api/jobs/{job['id']}/cover").content == PNG
+    edits = {**edits, "authors": "A. Writer", "new_cover": True}
+    assert client.post(f"/api/jobs/{job['id']}/build", json=edits).status_code == 200
+    done = wait("done")
+    assert done["authors"] == "A. Writer"
+    with zipfile.ZipFile(io.BytesIO(client.get(f"/api/jobs/{job['id']}/epub").content)) as z:
+        assert z.read("EPUB/images/cover.png") == PNG
+
     assert client.delete(f"/api/jobs/{job['id']}").status_code == 204
     assert client.get("/api/jobs").json() == []
 

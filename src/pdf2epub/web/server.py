@@ -348,13 +348,15 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
                 "new_cover": library.cover_upload_path(job).is_file(),
             }
         book = draft_of(job).book
+        new_cover = library.cover_upload_path(job).is_file()
         return {
             "kind": "pdf",
             "title": book.title,
             "authors": book.authors,
             "language": book.language,
             "direction": book.direction,
-            "has_cover": book.cover is not None,
+            "has_cover": book.cover is not None or new_cover,
+            "new_cover": new_cover,
             "chapters": chapter_summaries(book),
             "summary": job.summary,
             "edits": job.edits,
@@ -381,7 +383,11 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
     @app.get("/api/jobs/{job_id}/cover")
     def get_cover(job_id: str, user: dict = Depends(reader)) -> Response:
         job = owned(job_id, user)
-        cover = library.epub_cover(job) if job.kind == "epub" else draft_of(job).book.cover
+        upload = library.cover_upload_path(job)
+        if job.kind == "epub":
+            cover = library.epub_cover(job)
+        else:
+            cover = upload.read_bytes() if upload.is_file() else draft_of(job).book.cover
         if not cover:
             raise HTTPException(404, "No cover")
         try:
@@ -392,10 +398,10 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
 
     @app.post("/api/jobs/{job_id}/cover")
     async def upload_cover(job_id: str, request: Request, file: UploadFile = File(...), user: dict = Depends(writer)) -> dict:
-        """A new cover image for an EPUB that is being enriched."""
+        """A new cover image for a book that is being built or enriched."""
         job = owned(job_id, user)
-        if job.kind != "epub":
-            raise HTTPException(409, "Covers can be replaced for EPUB files only")
+        if job.kind == "pdf":
+            draft_of(job)
         data = await file.read(20 * CHUNK + 1)
         try:
             check_image(data)

@@ -194,6 +194,10 @@ def _prepare_pdf(settings: Settings, library: Library, db: Database, quota: Quot
 def _build_pdf(library: Library, db: Database, job: Job, reporter: _Reporter, edits: dict) -> None:
     draft = library.draft(job)
     book = apply_edits(draft.book, Edits.from_json(edits))
+    upload = library.cover_upload_path(job)
+    if upload.is_file() and edits.get("new_cover", True) and edits.get("cover", True):
+        book.cover = upload.read_bytes()
+        book.cover_ext = "png" if book.cover.startswith(b"\x89PNG") else "jpg"
     edited = Draft(**{**draft.__dict__, "book": book})
     out = library.epub_path(job)
     report = build(edited, out, reporter.progress)

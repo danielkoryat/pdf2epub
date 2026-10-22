@@ -101,7 +101,14 @@
       </div>
 
       <div class="card meta">
-        <img id="cover" alt="Cover" class="cover hidden">
+        <div class="cover-box">
+          <img id="cover" alt="Cover" class="cover hidden">
+          <div id="m-nocover" class="nocover muted">No cover</div>
+          <label class="file-button">Choose a new cover
+            <input type="file" id="m-cover-file" accept="image/jpeg,image/png" hidden>
+          </label>
+          <button class="ghost small hidden" id="m-cover-undo" type="button">Keep the original cover</button>
+        </div>
         <div class="grid">
           <label>Title <input id="m-title" dir="auto"></label>
           <label>Author <input id="m-authors" dir="auto" placeholder="Comma-separated"></label>

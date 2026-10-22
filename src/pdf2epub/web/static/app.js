@@ -581,13 +581,11 @@ function openPdfReview(jobId, draft) {
   $("#review-title").textContent = edits.title || draft.title;
   $("#review-title").dir = "auto";
   $("#m-title").value = edits.title || draft.title;
-  $("#m-authors").value = (edits.authors || draft.authors || []).join(", ");
+  // Saved edits keep the authors as typed (a string); the draft has them as a list.
+  $("#m-authors").value = typeof edits.authors === "string" ? edits.authors : (edits.authors || draft.authors || []).join(", ");
   $("#m-language").value = edits.language || draft.language;
   $("#m-cover").checked = edits.cover ?? true;
-  $("#m-cover-wrap").classList.toggle("hidden", !draft.has_cover);
-  const cover = $("#cover");
-  cover.classList.toggle("hidden", !draft.has_cover);
-  if (draft.has_cover) cover.src = `/api/jobs/${jobId}/cover`;
+  updatePdfCover(draft.has_cover, draft.new_cover);
 
   const s = draft.summary || {};
   $("#m-summary").textContent = [
@@ -600,6 +598,34 @@ function openPdfReview(jobId, draft) {
   renderChapters();
   show("review");
 }
+
+function updatePdfCover(hasCover, isNew) {
+  const img = $("#cover");
+  img.classList.toggle("hidden", !hasCover);
+  $("#m-nocover").classList.toggle("hidden", hasCover);
+  if (hasCover) img.src = `/api/jobs/${current.id}/cover?t=${Date.now()}`;
+  $("#m-cover-wrap").classList.toggle("hidden", !hasCover);
+  $("#m-cover-undo").classList.toggle("hidden", !isNew);
+}
+
+$("#m-cover-file").addEventListener("change", async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const data = new FormData();
+  data.set("file", file, file.name);
+  try {
+    await api(`/api/jobs/${current.id}/cover`, { method: "POST", body: data });
+    $("#m-cover").checked = true;
+    updatePdfCover(true, true);
+  } catch (err) { alert(err.message); }
+  e.target.value = "";
+});
+
+$("#m-cover-undo").addEventListener("click", async () => {
+  await api(`/api/jobs/${current.id}/cover`, { method: "DELETE" });
+  const draft = await api(`/api/jobs/${current.id}/draft`);
+  updatePdfCover(draft.has_cover, false);
+});
 
 function groupOf(i) {
   // The rows merged into the chapter at index i (which itself is not merged into the one above).
@@ -712,6 +738,7 @@ function collectEdits() {
     authors: $("#m-authors").value,
     language: $("#m-language").value.trim(),
     cover: $("#m-cover").checked,
+    new_cover: !$("#m-cover-undo").classList.contains("hidden"),
     chapters: current.rows.map(r => ({
       index: r.ch.index,
       title: (r.title || "").trim() !== (r.ch.title || "") ? (r.title || "").trim() : null,
@@ -1207,6 +1234,9 @@ async function loadAdminJobs() {
   if (MODE === "server") {
     try { await loadMe(); } catch { showSignIn(); return; }
     history.replaceState(null, "", "/");
+  } else {
+    // Local mode has no sign-in, but /api/me still says whether audiobooks are on.
+    try { await loadMe(); } catch { /* no audiobook buttons then */ }
   }
   show("home");
   refreshJobs();

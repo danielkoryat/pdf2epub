@@ -1,6 +1,6 @@
 """The voice engines. Each one turns a paragraph into mono samples at audio.RATE.
 
-  blue        BlueTTS (open source): Hebrew and English, on the processor.
+  blue        BlueTTS (open source): Hebrew and English, on the processor or an NVIDIA GPU (gpu.py).
   chatterbox  Chatterbox Multilingual (open source): Hebrew and English, on an NVIDIA GPU. Its voices are copied
               from a short BlueTTS recording of the voice of the same name.
   edge        Microsoft Edge's online read-aloud voices (an unofficial service).

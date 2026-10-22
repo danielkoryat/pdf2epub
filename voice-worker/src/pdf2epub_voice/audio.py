@@ -30,9 +30,11 @@ def silence(seconds: float, rate: int = RATE) -> np.ndarray:
 def resample(audio: np.ndarray, rate: int, target: int = RATE) -> np.ndarray:
     if rate == target:
         return audio.astype(np.float32, copy=False)
-    import librosa
+    # soxr itself, not through librosa: importing librosa loads SciPy's OpenBLAS, and on Windows that load once
+    # hung for good inside a worker whose ONNX Runtime threads were already running.
+    import soxr
 
-    return librosa.resample(audio.astype(np.float32), orig_sr=rate, target_sr=target, res_type="soxr_hq").astype(np.float32)
+    return soxr.resample(audio.astype(np.float32), rate, target, quality="HQ").astype(np.float32)
 
 
 def _pipe(args: list[str], data: bytes) -> bytes:

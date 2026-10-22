@@ -1,4 +1,5 @@
-"""BlueTTS (github.com/maxmelichov/BlueTTS): fast open-source Hebrew and English voices, on the processor.
+"""BlueTTS (github.com/maxmelichov/BlueTTS): fast open-source Hebrew and English voices, on the processor, or on
+an NVIDIA GPU when the GPU build of ONNX Runtime is installed (gpu.py).
 
 Models come from Hugging Face at a fixed revision; the named voices (noa, lily, daniel, adam) are small style
 files in the BlueTTS repository, fetched at the commit the package is installed from.
@@ -38,7 +39,7 @@ class BlueEngine:
         if not complete.is_file():
             snapshot_download(MODEL_REPO, revision=MODEL_REVISION, local_dir=onnx_dir)
             complete.touch()
-        self.tts = load_text_to_speech(str(onnx_dir))
+        self.tts = _load_on_gpu(str(onnx_dir)) or load_text_to_speech(str(onnx_dir))
         self.rate = self.tts.sample_rate
         self._styles: dict[str, object] = {}
 
@@ -67,3 +68,27 @@ class BlueEngine:
         if audio.ndim == 2:
             audio = audio[0]
         return resample(limit_peak(audio), self.rate)
+
+
+def _load_on_gpu(onnx_dir: str):
+    """BlueTTS with its models on the GPU (see gpu.py), or None to run it on the processor. BlueTTS's own GPU
+    switch is not finished, so this builds the model the way its load_text_to_speech does, with the GPU."""
+    import blue_onnx as b
+    import onnxruntime as ort
+
+    from ..gpu import providers
+
+    gpu = providers()
+    if gpu is None:
+        return None
+    opts = ort.SessionOptions()
+    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    opts.inter_op_num_threads = 1
+    sessions = b.load_onnx_all(onnx_dir, opts, gpu)
+    if "CUDAExecutionProvider" not in sessions[2].get_providers():  # the CUDA libraries did not load
+        log.warning("BlueTTS could not use the GPU; it runs on the processor")
+        return None
+    log.info("BlueTTS runs on the GPU")
+    u_text, u_ref = b.load_uncond(onnx_dir)
+    return b.TextToSpeech(b.load_cfgs(onnx_dir), b.load_text_processor(onnx_dir), *sessions, g2p=b.TextProcessor(None),
+                          u_text=u_text, u_ref=u_ref, latent_stats=b.load_latent_stats(onnx_dir))

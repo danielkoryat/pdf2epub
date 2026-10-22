@@ -151,6 +151,13 @@ def cmd_check(args: argparse.Namespace) -> int:
     print(f"pdf2epub-voice {__version__}, Python {sys.version.split()[0]}")
     print(f"Engines installed: {', '.join(installed()) or 'none'}")
     print(f"GPU: {_gpu() or 'none found'}")
+    if "blue" in installed():
+        import onnxruntime
+
+        from .gpu import providers
+
+        where = "the GPU" if providers() else "the processor"
+        print(f"BlueTTS runs on {where} (ONNX Runtime {onnxruntime.__version__})")
     try:
         print(f"ffmpeg: {ffmpeg()}")
     except RuntimeError as exc:
@@ -235,4 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     say.add_argument("-o", "--output", default="say.mp3")
     args = p.parse_args(argv)
     _logging(args.verbose)
+    from .gpu import prefer_gpu_runtime
+
+    prefer_gpu_runtime()
     return {"run": cmd_run, "check": cmd_check, "samples": cmd_samples, "say": cmd_say}[args.command](args)

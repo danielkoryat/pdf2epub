@@ -8,12 +8,12 @@ BookPlayer, Smart AudioBook Player, VLC) open as a book. Hebrew and English.
 
 | Engine | What it is | Speed on a laptop (RTX 2000 Ada) | On the site's server (2 ARM cores) | License |
 |---|---|---|---|---|
-| **BlueTTS** (default) | Open-source model by the authors of Phonikud. Natural Hebrew; reads numbers, dates and English words inside Hebrew. Voices: Noa, Lily, Daniel, Adam. | about 2.5x faster than real time, on the processor | about half of real time | Code MIT; the model files state no license |
+| **BlueTTS** (default) | Open-source model by the authors of Phonikud. Natural Hebrew; reads numbers, dates and English words inside Hebrew. Voices: Noa, Lily, Daniel, Adam. | about 7x faster than real time on the GPU (2.5x on the processor alone) | about half of real time | Code MIT; the model files state no license |
 | **Chatterbox** | Resemble AI's open multilingual model, on the GPU. Livelier, slower. Its voices copy BlueTTS's voices of the same name from a short recording. | about real time | not offered (no GPU) | MIT |
 | **Microsoft Edge voices** | Microsoft's online read-aloud voices (Hila and Avri in Hebrew; Ava, Andrew, Sonia and Ryan in English). | many times faster than real time | the same | Free, but an unofficial use of Microsoft's service that may change or stop |
 
 A 200-page book is about 300,000 letters: roughly 7 hours of Hebrew audio (5 in English). With BlueTTS on
-it takes about 3 hours to make on the laptop and about 13 on the server; with
+it takes about 1 hour to make on the laptop's GPU (3 on its processor) and about 13 on the server; with
 Chatterbox on the laptop about 7 to 8. The voice worker measures its own speed on every chapter and the site
 bases its estimates on that.
 
@@ -75,14 +75,16 @@ echo "PDF2EPUB_VOICE_TOKEN=$(python3 -c 'import secrets; print(secrets.token_url
 ```
 
 **For the local app (Windows)**: needs [uv](https://docs.astral.sh/uv/), ffmpeg on PATH, and for Chatterbox an
-NVIDIA GPU with 8 GB. From this repository:
+NVIDIA GPU with 8 GB (BlueTTS uses the GPU too when there is one). From this repository:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install-voice-worker.ps1
 ```
 
 It installs `voice-worker\` (a few GB the first time; models download on first use). `-NoChatterbox` skips
-Chatterbox. From then on the desktop shortcut (or `pdf2epub-web`) starts the worker along with the app;
+Chatterbox. With an NVIDIA GPU it also puts the GPU build of ONNX Runtime in
+`voice-worker\.venv\onnxruntime-gpu` for BlueTTS (see `voice-worker/src/pdf2epub_voice/gpu.py`); `check` says
+whether BlueTTS runs on the GPU or the processor. From then on the desktop shortcut (or `pdf2epub-web`) starts the worker along with the app;
 `pdf2epub-web --no-voice-worker` leaves it off.
 
 Useful commands (`uv run --project voice-worker pdf2epub-voice ...`):

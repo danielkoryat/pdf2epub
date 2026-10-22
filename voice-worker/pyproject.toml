@@ -15,6 +15,7 @@ dependencies = [
     # the BlueTTS repository is locked to.
     "renikud-plus==0.3.0",
     "soundfile>=0.12",
+    "soxr>=0.5",  # resampling BlueTTS's 44.1 kHz to the audiobook's 24 kHz
 ]
 
 [project.optional-dependencies]

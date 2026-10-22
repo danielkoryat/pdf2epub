@@ -21,6 +21,7 @@ import os
 import shutil
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ PROGRESS_SECONDS = 10
 # and Chatterbox makes a sentence up to three times.
 STALL_SECONDS = 20 * 60
 EXIT_STALLED = 3  # the exit code that asks to be started again
+SPEED_WINDOW = 5 * 60  # the speed the site shows is measured over the last few minutes of reading
 KEEP_DAYS = 14  # unfinished work of jobs that never came back is removed after this
 
 
@@ -53,6 +55,7 @@ class _Progress(threading.Thread):
         self.stall_seconds = stall_seconds
         self.active = time.monotonic()  # when the last paragraph started or finished
         self.reading = True  # watched for stalls only while reading: building the M4B takes long too
+        self.recent: deque[tuple[float, float]] = deque()  # (when a paragraph was finished, seconds of audio)
         self.done = 0
         self.lines: list[str] = []
         self.cancelled = threading.Event()
@@ -66,6 +69,21 @@ class _Progress(threading.Thread):
 
     def touch(self) -> None:
         self.active = time.monotonic()
+
+    def made(self, seconds: float) -> None:
+        self.recent.append((time.monotonic(), seconds))
+
+    def speed(self) -> float | None:
+        """Seconds of audio made per second over the last SPEED_WINDOW, the time between paragraphs included
+        (saving chapters, preparing text); None until there is a minute of audio to go by."""
+        now = time.monotonic()
+        while self.recent and self.recent[0][0] < now - SPEED_WINDOW:
+            self.recent.popleft()
+        if len(self.recent) < 2:
+            return None
+        audio = sum(seconds for _, seconds in list(self.recent)[1:])  # the first one marks the window's start
+        elapsed = self.recent[-1][0] - self.recent[0][0]
+        return round(min(audio / elapsed, 999), 2) if audio >= 60 and elapsed > 0 else None  # the site takes up to 1000
 
     def run(self) -> None:
         while not self.stopped.wait(PROGRESS_SECONDS):
@@ -85,7 +103,7 @@ class _Progress(threading.Thread):
         with self.lock:
             lines, self.lines = self.lines, []
         try:
-            self.client.progress(self.job_id, self.done, self.total, lines)
+            self.client.progress(self.job_id, self.done, self.total, lines, self.speed())
         except Gone:
             self.cancelled.set()
         except Exception as exc:  # noqa: BLE001 -- the site is unreachable: keep reading, report later
@@ -193,6 +211,7 @@ class Reader:
             progress.touch()
             audio = engine.synthesize(text, text_lang, o["voice"], o["speed"], o["quality"])
             progress.touch()
+            progress.made(len(audio) / RATE)
             return audio
 
         parts: list[np.ndarray] = []

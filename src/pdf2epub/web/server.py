@@ -140,8 +140,12 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
         if job.kind == "audio" and job.status == "building" and job.pending == "speak" and job.total:
             # What is left to read, at the speed the reading worker measured (a laptop's GPU is many times
             # faster than the server; the estimate made when the book was queued did not know which would read it).
+            # The worker sends its speed of the last few minutes; until then, what it measured on earlier books.
+            key = f"{job.options['engine']}/{job.options['quality']}"
             reading = [w for w in db.voice_workers() if w["name"] == job.worker] or voice_api.online_workers(db)
-            data["seconds_left"] = estimate(max(job.total - job.done, 0), job.options, measured_speeds(reading))["making_seconds"]
+            speed = job.speed or measured_speeds(reading).get(key)
+            data["seconds_left"] = estimate(max(job.total - job.done, 0), job.options, {key: speed} if speed else {})["making_seconds"]
+            data["speed"] = speed
         return data
 
     # -- pages and sign-in ---------------------------------------------------------------------------------

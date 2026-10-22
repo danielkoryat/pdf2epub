@@ -217,3 +217,22 @@ def test_a_stuck_engine_ends_the_worker_to_be_started_again(tmp_path: Path, monk
     assert exits == [reader_module.EXIT_STALLED]
     assert any("starting the voice worker again" in line for p in site.progress for line in p["log"])
 
+
+
+def test_speed_is_measured_over_the_last_minutes(monkeypatch):
+    from pdf2epub_voice import reader as reader_module
+    from pdf2epub_voice.reader import SPEED_WINDOW, _Progress
+
+    now = [1000.0]
+    monkeypatch.setattr(reader_module.time, "monotonic", lambda: now[0])
+    progress = _Progress(None, "job", 0)
+    progress.made(30)
+    assert progress.speed() is None  # nothing to go by yet
+    now[0] += 20
+    progress.made(40)
+    now[0] += 20
+    progress.made(40)
+    assert progress.speed() == 2.0  # 80 s of audio in the 40 s after the first paragraph
+    now[0] += SPEED_WINDOW + 1
+    progress.made(10)
+    assert progress.speed() is None  # older paragraphs no longer count

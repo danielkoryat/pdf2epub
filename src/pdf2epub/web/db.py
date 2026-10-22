@@ -145,7 +145,11 @@ CREATE TABLE IF NOT EXISTS voice_workers (
 );
 """
 
-MIGRATIONS = [_V1, _V2, _V3, _V4]
+_V5 = """
+ALTER TABLE jobs ADD COLUMN speed REAL;  -- audiobooks: times faster than real time the voice worker is reading it
+"""
+
+MIGRATIONS = [_V1, _V2, _V3, _V4, _V5]
 
 _JSON_FIELDS = ("options", "summary", "report", "edits", "log", "details", "engines", "info")
 _AUDIT_FIELDS = ("ts", "user_id", "email", "ip", "country", "user_agent", "action", "target", "outcome", "details", "prev_hash")
@@ -268,7 +272,7 @@ class Database:
         with self._lock:
             row = self._conn.execute(
                 f"""UPDATE jobs SET status=CASE pending WHEN 'prepare' THEN 'preparing' ELSE 'building' END,
-                        worker=?, claimed_at=?, heartbeat=?, attempts=attempts+1, updated=?
+                        worker=?, claimed_at=?, heartbeat=?, attempts=attempts+1, speed=NULL, updated=?
                     WHERE id=(SELECT j.id FROM jobs j WHERE j.status='queued' AND {' AND '.join(where)}
                               ORDER BY EXISTS(SELECT 1 FROM jobs r WHERE r.owner_id=j.owner_id AND r.status IN ('preparing','building')),
                                        j.updated LIMIT 1)

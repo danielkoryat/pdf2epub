@@ -46,6 +46,7 @@ class ProgressBody(BaseModel):
     done: int = Field(ge=0)
     total: int = Field(ge=0)
     log: list[str] = Field(default_factory=list, max_length=50)
+    speed: float | None = Field(default=None, gt=0, le=1000)  # times faster than real time, lately
 
 
 class FinishBody(BaseModel):
@@ -124,8 +125,9 @@ def router(settings: Settings, db: Database, library: Library, auth: Auth, limit
     def progress(job_id: str, body: ProgressBody, name: str = Depends(worker)) -> dict:
         job = claimed(job_id, name)
         lines = [line[:300] for line in body.log]
+        speed = {"speed": round(body.speed, 2)} if body.speed else {}
         db.update_job(job.id, stage="speak", done=min(body.done, body.total), total=body.total, heartbeat=time.time(),
-                      log=[*job.log, *lines][-200:])
+                      log=[*job.log, *lines][-200:], **speed)
         return {"ok": True}
 
     @r.put("/jobs/{job_id}/parts/{n}")

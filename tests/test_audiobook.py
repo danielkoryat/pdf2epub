@@ -173,6 +173,11 @@ def test_audiobook_from_request_to_download(tmp_path: Path):
     assert voice.post(f"/api/voice/jobs/{audio['id']}/progress", json={"done": 1_000, "total": 29_000}).status_code == 200
     job = admin.get(f"/api/jobs/{audio['id']}").json()
     assert job["seconds_left"] == estimate(28_000, job["options"], {"blue/smooth": 10.0})["making_seconds"] > 0
+    assert job["speed"] == 10.0
+    # Once the worker sends the speed of its last minutes, that is what counts.
+    assert voice.post(f"/api/voice/jobs/{audio['id']}/progress", json={"done": 1_000, "total": 29_000, "speed": 4.0}).status_code == 200
+    job = admin.get(f"/api/jobs/{audio['id']}").json()
+    assert job["speed"] == 4.0 and job["seconds_left"] == estimate(28_000, job["options"], {"blue/smooth": 4.0})["making_seconds"]
 
     half = len(M4B) // 2
     assert voice.put(f"/api/voice/jobs/{audio['id']}/parts/0", content=M4B[:half]).status_code == 200

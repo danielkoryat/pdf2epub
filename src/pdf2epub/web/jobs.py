@@ -72,6 +72,7 @@ class Job:
     attempts: int = 0
     pages: int = 0
     size: int = 0
+    speed: float | None = None  # audiobooks: how many times faster than real time it is being read
     ip: str = ""  # the network the upload came from (server mode; guests are counted by it)
 
     @classmethod

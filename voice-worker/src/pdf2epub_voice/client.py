@@ -66,8 +66,9 @@ class Client:
     def cover(self, job_id: str) -> bytes:
         return self._call("GET", f"/api/voice/jobs/{job_id}/cover").content
 
-    def progress(self, job_id: str, done: int, total: int, lines: list[str]) -> None:
-        self._call("POST", f"/api/voice/jobs/{job_id}/progress", json={"done": done, "total": total, "log": lines[-50:]})
+    def progress(self, job_id: str, done: int, total: int, lines: list[str], speed: float | None = None) -> None:
+        body = {"done": done, "total": total, "log": lines[-50:], **({"speed": speed} if speed else {})}
+        self._call("POST", f"/api/voice/jobs/{job_id}/progress", json=body)
 
     def upload(self, job_id: str, path: Path, seconds: float, chapters: int) -> None:
         digest = hashlib.sha256()

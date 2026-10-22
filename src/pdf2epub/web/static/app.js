@@ -445,6 +445,7 @@ function audioCard(job) {
       text = "Waiting";
     } else {
       text = `${job.stage_label || "Starting"}${job.total ? ` · ${pct}%` : ""}`;
+      if (job.seconds_left) text += ` · about ${fmtLength(job.seconds_left)} left`;
     }
     card.append(el("div", { class: "bar" }, bar, el("span", { class: "muted" }, text)));
     if (job.log.length) card.append(el("div", { class: "log", dir: "auto" }, job.log.slice(-4).join("\n")));

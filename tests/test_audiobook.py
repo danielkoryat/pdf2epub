@@ -12,7 +12,7 @@ from test_server_mode import BASE, Site, make_epub
 
 from pdf2epub.model import NOTE_CLOSE, NOTE_OPEN, Block, Book, Chapter, Kind
 from pdf2epub.narration import load_script, narration_script, save_script
-from pdf2epub.voices import validate_options
+from pdf2epub.voices import estimate, validate_options
 from pdf2epub.web.server import create_app
 from pdf2epub.web.worker import run_action
 from pdf2epub.writer import write_epub
@@ -158,7 +158,7 @@ def test_audiobook_from_request_to_download(tmp_path: Path):
     assert TestClient(site.app, base_url=BASE).post("/api/voice/claim", json={"engines": ["blue"]}).status_code == 401
     voice = _voice(site)
     assert voice.post("/api/voice/claim", json={"engines": ["edge"]}).status_code == 204
-    claimed = voice.post("/api/voice/claim", json={"engines": ["blue", "edge"], "info": {"gpu": "test"}})
+    claimed = voice.post("/api/voice/claim", json={"engines": ["blue", "edge"], "info": {"gpu": "test", "speeds": {"blue/smooth": 10.0}}})
     assert claimed.status_code == 200 and claimed.json()["id"] == audio["id"]
     assert admin.get("/api/voices").json()["online"] is True
 
@@ -169,6 +169,10 @@ def test_audiobook_from_request_to_download(tmp_path: Path):
     assert voice.post(f"/api/voice/jobs/{audio['id']}/progress", json={"done": 1, "total": 4, "log": ["Chapter 1 of 2"]}).status_code == 200
     job = admin.get(f"/api/jobs/{audio['id']}").json()
     assert job["status"] == "building" and job["done"] == 1 and job["stage_label"] == "Reading aloud"
+    # Time left: what is left to read, at the speed this worker measured (10x real time).
+    assert voice.post(f"/api/voice/jobs/{audio['id']}/progress", json={"done": 1_000, "total": 29_000}).status_code == 200
+    job = admin.get(f"/api/jobs/{audio['id']}").json()
+    assert job["seconds_left"] == estimate(28_000, job["options"], {"blue/smooth": 10.0})["making_seconds"] > 0
 
     half = len(M4B) // 2
     assert voice.put(f"/api/voice/jobs/{audio['id']}/parts/0", content=M4B[:half]).status_code == 200

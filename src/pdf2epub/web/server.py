@@ -34,7 +34,7 @@ from .. import config
 from ..edit import chapter_preview, chapter_summaries
 from ..model import Kind
 from ..validate import epubcheck_available
-from ..voices import catalog, measured_speeds, validate_options
+from ..voices import catalog, estimate, measured_speeds, validate_options
 from . import admin as admin_api
 from . import voice as voice_api
 from .auth import Auth
@@ -136,7 +136,13 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
         return job
 
     def public(job: Job) -> dict:
-        return job.public(library.queue_position(job))
+        data = job.public(library.queue_position(job))
+        if job.kind == "audio" and job.status == "building" and job.pending == "speak" and job.total:
+            # What is left to read, at the speed the reading worker measured (a laptop's GPU is many times
+            # faster than the server; the estimate made when the book was queued did not know which would read it).
+            reading = [w for w in db.voice_workers() if w["name"] == job.worker] or voice_api.online_workers(db)
+            data["seconds_left"] = estimate(max(job.total - job.done, 0), job.options, measured_speeds(reading))["making_seconds"]
+        return data
 
     # -- pages and sign-in ---------------------------------------------------------------------------------
 

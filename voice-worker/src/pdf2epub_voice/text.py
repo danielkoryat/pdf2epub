@@ -49,6 +49,19 @@ def chunks(text: str, max_len: int) -> list[str]:
     return out
 
 
+def groups(text: str, max_len: int) -> list[str]:
+    """Sentences gathered into pieces of at most max_len characters, as many as fit in each; an overlong
+    sentence is cut at commas, then at spaces."""
+    out: list[str] = []
+    for sentence in sentences(text):
+        for piece in _split_long(sentence, max_len):
+            if out and len(out[-1]) + 1 + len(piece) <= max_len:
+                out[-1] = f"{out[-1]} {piece}"
+            else:
+                out.append(piece)
+    return out
+
+
 def _split_long(sentence: str, max_len: int) -> list[str]:
     if len(sentence) <= max_len:
         return [sentence]

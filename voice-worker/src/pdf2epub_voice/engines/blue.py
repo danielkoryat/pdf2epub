@@ -14,7 +14,7 @@ import httpx
 import numpy as np
 
 from ..audio import resample
-from ..text import PAUSE_SENTENCE, chunks, strip_niqqud, tag_latin
+from ..text import PAUSE_SENTENCE, groups, strip_niqqud, tag_latin
 
 log = logging.getLogger(__name__)
 
@@ -22,9 +22,12 @@ MODEL_REPO = "notmax123/BlueTTS2.5-onnx"
 MODEL_REVISION = "468da64b4a51795a7594a3637727dbaf876b6df2"
 REPO_COMMIT = "0e38dbf08ed53f85863d1eab092bd9572c53a503"  # keep in step with pyproject.toml
 STEPS = 32  # refinement steps: more is smoother and slower
-# The Hebrew letters-to-sounds model reads at most 2,046 letters at once, and refuses longer paragraphs with an
-# ONNX "invalid expand shape" error. Longer paragraphs are read in sentence groups; the <en> tags take room too.
-MAX_PIECE = 1000
+# Text goes to BlueTTS in sentence groups of at most this many letters, which it splits further at . ! and ? as
+# usual. It splits only there, and its model takes at most 1,000 sounds at once ("cannot broadcast" errors); its
+# Hebrew letters-to-sounds model, at most 2,046 letters ("invalid expand shape"). Sapiens has sentences of 1,800
+# letters without a full stop, and a paragraph of 2,400. 400 letters make at most about 520 sounds, and most
+# paragraphs fit whole, as before (smaller pieces read about 10% slower).
+PIECE_CHARS = 400
 
 
 class BlueEngine:
@@ -66,7 +69,7 @@ class BlueEngine:
         if lang == "he":
             text = strip_niqqud(text)
         parts: list[np.ndarray] = []
-        for piece in chunks(text, MAX_PIECE) if len(text) > MAX_PIECE else [text]:
+        for piece in groups(text, PIECE_CHARS):
             if parts:
                 parts.append(np.zeros(int(PAUSE_SENTENCE * self.rate), dtype=np.float32))
             audio, _ = self.tts(tag_latin(piece) if lang == "he" else piece, lang=lang, style=self.style(voice), total_step=STEPS,

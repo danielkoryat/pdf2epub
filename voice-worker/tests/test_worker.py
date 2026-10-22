@@ -14,7 +14,7 @@ import pytest
 from pdf2epub_voice.audio import RATE, ChapterAudio, ffmetadata
 from pdf2epub_voice.client import Client, Gone
 from pdf2epub_voice.reader import Reader, Speeds
-from pdf2epub_voice.text import chunks, intro, sentences, strip_niqqud, tag_latin
+from pdf2epub_voice.text import chunks, groups, intro, sentences, strip_niqqud, tag_latin
 
 def _png() -> bytes:
     if not shutil.which("ffmpeg"):
@@ -169,9 +169,10 @@ def test_a_deleted_job_stops(tmp_path: Path):
     assert site.finished is None and not site.parts
 
 
-def test_blue_reads_long_paragraphs_in_pieces():
-    # BlueTTS's Hebrew front end refuses more than 2,046 letters at once: longer paragraphs go in sentence groups.
-    from pdf2epub_voice.engines.blue import MAX_PIECE, BlueEngine
+def test_blue_reads_in_sentence_groups():
+    # BlueTTS splits only at . ! ?, and its models refuse long input: a 1,800-letter sentence without a full stop
+    # failed a whole book. It gets sentence groups of at most PIECE_CHARS letters.
+    from pdf2epub_voice.engines.blue import PIECE_CHARS, BlueEngine
 
     asked: list[str] = []
 
@@ -181,15 +182,23 @@ def test_blue_reads_long_paragraphs_in_pieces():
 
     engine = object.__new__(BlueEngine)
     engine.tts, engine.rate, engine._styles = tts, RATE, {"noa": None}
-    sentence = "זה משפט ארוך למדי על ההיסטוריה של New York ושל העולם כולו."
-    paragraph = " ".join([sentence] * 60)  # about 3,500 letters
-    audio = engine.synthesize(paragraph, "he", "noa", 1.0, "smooth")
-    assert len(asked) > 1 and all(len(a) <= MAX_PIECE + 50 for a in asked)
-    assert all("<en>New York</en>" in a for a in asked)  # tags are added after splitting, never cut in half
+    clause = "ושל ההיסטוריה של העולם כולו, כפי שסופרה בעיר New York"
+    sentence = " ".join([clause] * 40) + "."  # about 2,200 letters, no full stop until the end
+    audio = engine.synthesize(sentence, "he", "noa", 1.0, "smooth")
+    assert len(asked) > 5 and all(len(a.replace("<en>", "").replace("</en>", "")) <= PIECE_CHARS for a in asked)
+    assert all(a.count("<en>") == a.count("</en>") for a in asked)  # tags are added after cutting, never cut in half
     assert len(audio) > len(asked) * 100  # the pieces, with a pause between each
     asked.clear()
-    engine.synthesize(sentence, "he", "noa", 1.0, "smooth")
-    assert asked == [tag_latin(sentence)]  # an ordinary paragraph is read as before
+    engine.synthesize("משפט קצר. ועוד אחד!", "he", "noa", 1.0, "smooth")
+    assert asked == ["משפט קצר. ועוד אחד!"]  # short sentences still go together
+
+
+def test_sentence_groups():
+    text = "One. Two is longer, with a comma. Three!"
+    assert groups(text, 100) == [text]
+    small = groups(text, 20)
+    assert all(len(g) <= 20 for g in small) and " ".join(small) == text  # nothing lost or reordered
+    assert all(len(g) <= 30 for g in groups("word " * 50, 30))
 
 
 @needs_ffmpeg

@@ -114,7 +114,7 @@ def build_m4b(chapters: list[ChapterAudio], title: str, authors: list[str], lang
     listing.write_text("".join(f"file '{q}'\n" for q in quoted), encoding="utf-8")
     meta = work / "metadata.txt"
     meta.write_text(ffmetadata(title, authors, chapters, language), encoding="utf-8")
-    args = [ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing), "-i", str(meta)]
+    args = [ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", str(listing), "-i", str(meta)]
     maps = ["-map", "0:a", "-map_metadata", "1", "-map_chapters", "1"]
     if cover:
         picture = work / ("cover.png" if cover[:4] == b"\x89PNG" else "cover.jpg")
@@ -123,7 +123,15 @@ def build_m4b(chapters: list[ChapterAudio], title: str, authors: list[str], lang
         maps += ["-map", "2:v", "-c:v", "copy", "-disposition:v:0", "attached_pic"]
     tmp = out.with_suffix(".tmp.m4b")
     args += [*maps, "-c:a", "aac", "-b:a", BITRATE, "-ac", "1", "-ar", str(RATE), "-movflags", "+faststart", "-f", "mp4", str(tmp)]
-    done = subprocess.run(args, capture_output=True, check=False, creationflags=NO_WINDOW)
+    # No standard input: ffmpeg looks there for key presses, and the worker's input is the local app's pipe, which
+    # the worker itself waits on. On Windows ffmpeg then hung for good before finishing the file.
+    # And a time limit, as the worker does not watch this step for stalls: four times faster than real time is
+    # far slower than even the server's processor encodes.
+    limit = 600 + sum(c.seconds for c in chapters) / 4
+    try:
+        done = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, check=False, creationflags=NO_WINDOW, timeout=limit)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"ffmpeg did not finish the audiobook file in {limit / 60:.0f} minutes") from None
     if done.returncode != 0:
         raise RuntimeError(f"ffmpeg could not build the audiobook: {done.stderr.decode(errors='replace')[-400:]}")
     tmp.replace(out)

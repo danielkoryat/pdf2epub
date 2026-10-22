@@ -73,8 +73,8 @@ def _logging(verbose: bool) -> None:
 
 def _gpu() -> str:
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"], capture_output=True, text=True, timeout=10,
-                             creationflags=NO_WINDOW)
+        out = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"], stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW)
         return out.stdout.strip().splitlines()[0] if out.returncode == 0 and out.stdout.strip() else ""
     except (OSError, subprocess.SubprocessError):
         return ""

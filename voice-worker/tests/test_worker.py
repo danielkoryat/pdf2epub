@@ -245,3 +245,38 @@ def test_speed_is_measured_over_the_last_minutes(monkeypatch):
     now[0] += SPEED_WINDOW + 1
     progress.made(10)
     assert progress.speed() is None  # older paragraphs no longer count
+
+
+@needs_ffmpeg
+def test_m4b_is_built_while_the_worker_waits_on_its_input(tmp_path: Path):
+    # The local app holds the worker's standard input open, and a worker thread waits on it. An ffmpeg that
+    # inherited that input hung for good on Windows before finishing a book's M4B.
+    import sys
+
+    child = tmp_path / "child.py"
+    child.write_text("""
+import sys, threading, time
+from pathlib import Path
+import numpy as np, soundfile as sf
+from pdf2epub_voice.audio import RATE, ChapterAudio, build_m4b
+threading.Thread(target=lambda: sys.stdin.buffer.read(), daemon=True).start()
+time.sleep(0.5)
+work = Path(sys.argv[1])
+chapters = []
+for n in range(2):
+    path = work / f"{n}.flac"
+    noise = np.random.default_rng(n).uniform(-0.3, 0.3, RATE * 600).astype(np.float32)  # takes ffmpeg seconds: it looks for keys
+    sf.write(str(path), noise, RATE, subtype="PCM_16")
+    chapters.append(ChapterAudio(f"Chapter {n + 1}", path, 600.0))
+build_m4b(chapters, "Book", ["A. Writer"], "en", None, work / "book.m4b")
+print("built", flush=True)
+""", encoding="utf-8")
+    p = subprocess.Popen([sys.executable, str(child), str(tmp_path)], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    try:
+        p.wait(timeout=60)  # the input stays open meanwhile, as the app keeps it
+    except subprocess.TimeoutExpired:
+        p.kill()
+        pytest.fail("building the M4B hung")
+    finally:
+        p.stdin.close()
+    assert b"built" in p.stdout.read() and (tmp_path / "book.m4b").stat().st_size > 0

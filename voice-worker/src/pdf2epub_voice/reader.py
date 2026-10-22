@@ -76,6 +76,8 @@ class _Progress(threading.Thread):
     def speed(self) -> float | None:
         """Seconds of audio made per second over the last SPEED_WINDOW, the time between paragraphs included
         (saving chapters, preparing text); None until there is a minute of audio to go by."""
+        if not self.reading:
+            return None  # building the M4B: there is no reading speed to tell
         now = time.monotonic()
         while self.recent and self.recent[0][0] < now - SPEED_WINDOW:
             self.recent.popleft()

@@ -455,6 +455,8 @@ function audioCard(job) {
       if (job.summary) text += ` · making it takes about ${fmtLength(job.seconds_left ?? job.summary.making_seconds)}`;
     } else if (job.status === "queued") {
       text = "Waiting";
+    } else if (speaking && job.total && job.done >= job.total) {
+      text = "Building the audiobook file"; // everything is read; ffmpeg joins the chapters into one M4B
     } else {
       text = `${job.stage_label || "Starting"}${job.total ? ` · ${pct}%` : ""}`;
       if (job.speed) text += ` · ${job.speed.toFixed(1)}× real time`;

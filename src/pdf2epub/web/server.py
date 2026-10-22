@@ -137,7 +137,7 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
 
     def public(job: Job) -> dict:
         data = job.public(library.queue_position(job))
-        if job.kind == "audio" and job.pending == "speak" and job.status in ("queued", "building"):
+        if job.kind == "audio" and job.pending == "speak" and job.status in ("queued", "building") and not 0 < job.total <= job.done:
             # What is left to read, at the speed the worker measured (a laptop's GPU is many times faster than
             # the server; the estimate made when the book was queued did not know which would read it). While
             # reading, the worker sends its speed of the last few minutes; until then, and while the book waits,

@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import os
+import queue
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import soundfile as sf
 
 RATE = 24_000  # the audiobook's sample rate: plenty for speech, and what Chatterbox and Edge produce
 BITRATE = "48k"  # mono AAC: about 21 MB per hour
 # The worker may run without a console (started at logon): don't flash a window for every ffmpeg call.
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+# Encoding while the book is read gives way to the voices (on the server they share 1.5 processor cores).
+LOW_PRIORITY: dict = ({"creationflags": NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS} if os.name == "nt"
+                      else {"preexec_fn": lambda: os.nice(10)})
 
 
 def ffmpeg() -> str:
@@ -106,15 +112,76 @@ def ffmetadata(title: str, authors: list[str], chapters: list[ChapterAudio], lan
     return "\n".join(lines) + "\n"
 
 
-def build_m4b(chapters: list[ChapterAudio], title: str, authors: list[str], language: str, cover: bytes | None, out: Path) -> None:
-    """Join the chapters into one M4B with chapter marks, tags and the cover picture."""
+class Encoder:
+    """The book's AAC, made while it is read: one ffmpeg for the whole book, fed each chapter (its FLAC) as soon
+    as it is finished, so that at the end the M4B only needs its tags, chapter marks and cover (seconds, not
+    minutes). One continuous encoding: chapters encoded apart and joined drift by the encoder's lead-in, about
+    40 ms at every join. ffmpeg reads from a pipe of its own, never the worker's standard input."""
+
+    def __init__(self, out: Path):
+        self.out = out
+        self.chapters: queue.Queue[Path | None] = queue.Queue()
+        self.error: str | None = None
+        self.log = out.with_suffix(".log")
+        with open(self.log, "wb") as errors:
+            self.process = subprocess.Popen(
+                [ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "s16le", "-ar", str(RATE), "-ac", "1",
+                 "-i", "pipe:0", "-c:a", "aac", "-b:a", BITRATE, "-f", "adts", str(out)],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=errors, **LOW_PRIORITY)
+        self.feeder = threading.Thread(target=self._feed, daemon=True)
+        self.feeder.start()
+
+    def add(self, chapter: Path) -> None:
+        self.chapters.put(chapter)
+
+    def _feed(self) -> None:
+        stdin = self.process.stdin
+        try:
+            while (path := self.chapters.get()) is not None:
+                with sf.SoundFile(str(path)) as audio:
+                    for block in audio.blocks(blocksize=RATE * 60, dtype="int16"):
+                        stdin.write(block.tobytes())
+            stdin.close()
+        except (OSError, ValueError, RuntimeError) as exc:  # ffmpeg stopped, or a chapter could not be read
+            self.error = str(exc) or type(exc).__name__
+
+    def finish(self, timeout: float) -> Path | None:
+        """Wait until everything added is encoded: the AAC, or None if it is not complete."""
+        self.chapters.put(None)
+        self.feeder.join(timeout)
+        if not self.feeder.is_alive():
+            try:
+                self.process.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                pass
+        if self.feeder.is_alive() or self.process.poll() != 0 or self.error:
+            self.error = self.error or self.log.read_text(encoding="utf-8", errors="replace")[-300:] or "it did not finish in time"
+            self.stop()
+            return None
+        return self.out
+
+    def stop(self) -> None:
+        if self.process.poll() is None:
+            self.process.kill()
+            self.process.wait()
+
+
+def build_m4b(chapters: list[ChapterAudio], title: str, authors: list[str], language: str, cover: bytes | None, out: Path,
+              encoded: Path | None = None) -> None:
+    """Join the chapters into one M4B with chapter marks, tags and the cover picture. With `encoded` (the book's
+    AAC, made while it was read) the audio is copied as it is; otherwise the chapters are encoded now."""
     work = out.parent
-    listing = work / "chapters.txt"
-    quoted = (c.path.resolve().as_posix().replace("'", "'\\''") for c in chapters)  # the concat list's quoting
-    listing.write_text("".join(f"file '{q}'\n" for q in quoted), encoding="utf-8")
     meta = work / "metadata.txt"
     meta.write_text(ffmetadata(title, authors, chapters, language), encoding="utf-8")
-    args = [ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", str(listing), "-i", str(meta)]
+    if encoded is not None:
+        args = [ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", str(encoded), "-i", str(meta)]
+        audio = ["-c:a", "copy"]
+    else:
+        listing = work / "chapters.txt"
+        quoted = (c.path.resolve().as_posix().replace("'", "'\\''") for c in chapters)  # the concat list's quoting
+        listing.write_text("".join(f"file '{q}'\n" for q in quoted), encoding="utf-8")
+        args = [ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", str(listing), "-i", str(meta)]
+        audio = ["-c:a", "aac", "-b:a", BITRATE, "-ac", "1", "-ar", str(RATE)]
     maps = ["-map", "0:a", "-map_metadata", "1", "-map_chapters", "1"]
     if cover:
         picture = work / ("cover.png" if cover[:4] == b"\x89PNG" else "cover.jpg")
@@ -122,7 +189,7 @@ def build_m4b(chapters: list[ChapterAudio], title: str, authors: list[str], lang
         args += ["-i", str(picture)]
         maps += ["-map", "2:v", "-c:v", "copy", "-disposition:v:0", "attached_pic"]
     tmp = out.with_suffix(".tmp.m4b")
-    args += [*maps, "-c:a", "aac", "-b:a", BITRATE, "-ac", "1", "-ar", str(RATE), "-movflags", "+faststart", "-f", "mp4", str(tmp)]
+    args += [*maps, *audio, "-movflags", "+faststart", "-f", "mp4", str(tmp)]
     # No standard input: ffmpeg looks there for key presses, and the worker's input is the local app's pipe, which
     # the worker itself waits on. On Windows ffmpeg then hung for good before finishing the file.
     # And a time limit, as the worker does not watch this step for stalls: four times faster than real time is

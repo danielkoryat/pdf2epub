@@ -28,7 +28,7 @@ from typing import Any
 import numpy as np
 import soundfile as sf
 
-from .audio import RATE, ChapterAudio, build_m4b, normalize, silence
+from .audio import RATE, ChapterAudio, Encoder, build_m4b, normalize, silence
 from .client import Client, Gone
 from .engines import Engine, Engines
 from .text import PAUSE_BREAK, PAUSE_CHAPTER, PAUSE_HEADING, PAUSE_PARAGRAPH, chapter_name, intro
@@ -167,6 +167,7 @@ class Reader:
         progress.touch()  # loading the engine (a download, the first time) is not reading
         progress.start()
         started = time.monotonic()
+        encoder = Encoder(work / "book.aac")  # every chapter, as soon as it is there (those read before too)
         try:
             done: list[ChapterAudio] = []
             for n, chapter in enumerate(chapters):
@@ -189,11 +190,15 @@ class Reader:
                     elapsed = time.monotonic() - started
                     progress.say(f"Chapter {n + 1} of {len(chapters)}: {title} ({seconds / 60:.0f} min of audio, {elapsed / 60:.0f} min so far)")
                 done.append(ChapterAudio(title, path, seconds))
+                encoder.add(path)
             progress.reading = False
             progress.say("Building the audiobook file")
             out = work / "book.m4b"
-            build_m4b(done, script["title"], script["authors"], lang, cover, out)
             length = sum(c.seconds for c in done)
+            encoded = encoder.finish(timeout=600 + length / 4)
+            if encoded is None:
+                log.warning("The audio encoded while reading is incomplete (%s); encoding the book now", encoder.error)
+            build_m4b(done, script["title"], script["authors"], lang, cover, out, encoded)
             progress.say(f"Uploading {out.stat().st_size / 1048576:.0f} MB ({length / 3600:.1f} hours of audio)")
             progress.stopped.set()
             progress.send()
@@ -202,8 +207,10 @@ class Reader:
             shutil.rmtree(work, ignore_errors=True)
         except (Cancelled, Gone):
             log.info("Job %s was deleted or taken over; stopping", job_id)
+            encoder.stop()  # first: on Windows its open file would stay behind
             shutil.rmtree(work, ignore_errors=True)
         finally:
+            encoder.stop()
             progress.stopped.set()
 
     def _chapter(self, engine: Engine, o: dict, lang: str, chapter: dict, opening: dict | None, progress: _Progress) -> np.ndarray:

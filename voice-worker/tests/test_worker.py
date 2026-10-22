@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 import numpy as np
+import soundfile as sf
 import pytest
 
 from pdf2epub_voice.audio import RATE, ChapterAudio, ffmetadata
@@ -117,13 +118,14 @@ def test_client_retries_and_stops_on_gone(monkeypatch):
 
 
 @needs_ffmpeg
-def test_reading_a_book(tmp_path: Path):
+def test_reading_a_book(tmp_path: Path, caplog):
     site = FakeSite()
     tone = Tone()
     client = Client("https://site.test", "t" * 40, "laptop", transport=httpx.MockTransport(site))
     speeds = Speeds(tmp_path / "speeds.json")
     Reader(client, Engines(tone), tmp_path, speeds).read(client.claim(["blue"], {}))
     assert site.finished and site.finished["chapters"] == 2
+    assert "encoding the book now" not in caplog.text  # the audio encoded while reading was used
     assert list(speeds.totals) == ["blue/smooth"]
     data = b"".join(site.parts[i] for i in sorted(site.parts))
     assert hashlib.sha256(data).hexdigest() == site.finished["sha256"] and data[4:8] == b"ftyp"
@@ -280,3 +282,37 @@ print("built", flush=True)
     finally:
         p.stdin.close()
     assert b"built" in p.stdout.read() and (tmp_path / "book.m4b").stat().st_size > 0
+
+
+@needs_ffmpeg
+def test_m4b_is_still_made_when_the_audio_encoded_while_reading_is_lost(tmp_path: Path, monkeypatch, caplog):
+    from pdf2epub_voice import reader as reader_module
+
+    monkeypatch.setattr(reader_module.Encoder, "finish", lambda self, timeout: (self.stop(), None)[1])
+    site = FakeSite()
+    client = Client("https://site.test", "t" * 40, "laptop", transport=httpx.MockTransport(site))
+    Reader(client, Engines(Tone()), tmp_path).read(client.claim(["blue"], {}))
+    assert site.finished and site.finished["chapters"] == 2 and "encoding the book now" in caplog.text
+
+
+@needs_ffmpeg
+def test_audio_encoded_while_reading_keeps_chapters_in_place(tmp_path: Path):
+    # One continuous encoding: the M4B is as long as its chapters, and copying it adds no drift at the joins.
+    from pdf2epub_voice.audio import Encoder, build_m4b
+
+    chapters = []
+    encoder = Encoder(tmp_path / "book.aac")
+    for n in range(3):
+        path = tmp_path / f"{n}.flac"
+        tone = (0.2 * np.sin(2 * np.pi * 220 * np.arange(RATE * 20) / RATE)).astype(np.float32)
+        sf.write(str(path), tone, RATE, subtype="PCM_16")
+        chapters.append(ChapterAudio(f"Chapter {n + 1}", path, 20.0))
+        encoder.add(path)
+    encoded = encoder.finish(timeout=60)
+    assert encoded is not None
+    out = tmp_path / "book.m4b"
+    build_m4b(chapters, "Book", ["A. Writer"], "en", None, out, encoded)
+    probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_chapters", "-show_format", "-of", "json", str(out)],
+                                      capture_output=True, check=True).stdout)
+    assert abs(float(probe["format"]["duration"]) - 60.0) < 0.1
+    assert [round(float(c["start_time"])) for c in probe["chapters"]] == [0, 20, 40]

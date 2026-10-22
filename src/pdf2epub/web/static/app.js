@@ -392,6 +392,14 @@ async function removeJob(job) {
 
 /* ---------------------------------------------------------------- audiobooks */
 
+async function retryAudiobook(job) {
+  try {
+    await api(`/api/jobs/${job.id}/retry`, { method: "POST" });
+    track("audiobook_retried", { engine: job.options?.engine });
+  } catch (err) { alert(err.message); }
+  refreshJobs();
+}
+
 // The voices on offer and whether the voice worker that makes them is online.
 let VOICES = null;
 
@@ -422,6 +430,10 @@ function audioCard(job) {
     buttons.append(el("a", { class: "button", href: `/api/jobs/${job.id}/audiobook`, onclick: () => track("audiobook_downloaded", { engine: job.options?.engine }) },
       el("button", { class: "primary", type: "button" }, "Download audiobook")));
   }
+  if (job.status === "failed") {
+    // The same job again: the voice worker continues from the chapters it already made.
+    buttons.append(el("button", { type: "button", onclick: () => retryAudiobook(job) }, "Try again"));
+  }
   if (!ACTIVE.has(job.status) || speaking) {
     buttons.append(el("button", { class: "ghost danger", type: "button", onclick: () => removeJob(job) }, ACTIVE.has(job.status) ? "Cancel" : "Delete"));
   }
@@ -440,7 +452,7 @@ function audioCard(job) {
       const online = VOICES?.online && VOICES.online_engines.includes(job.options?.engine);
       text = !online ? "Waiting for the voice worker to come online"
         : job.queue_position > 1 ? `${job.queue_position - 1} audiobooks ahead` : "Starting soon";
-      if (job.summary) text += ` · making it takes about ${fmtLength(job.summary.making_seconds)}`;
+      if (job.summary) text += ` · making it takes about ${fmtLength(job.seconds_left ?? job.summary.making_seconds)}`;
     } else if (job.status === "queued") {
       text = "Waiting";
     } else {

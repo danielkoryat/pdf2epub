@@ -151,6 +151,7 @@ def test_audiobook_from_request_to_download(tmp_path: Path):
     _prepare(site, audio["id"])
     job = admin.get(f"/api/jobs/{audio['id']}").json()
     assert job["status"] == "queued" and job["pending"] == "speak", job
+    assert job["seconds_left"] == job["summary"]["making_seconds"]  # nothing read yet, no worker has measured
     assert job["summary"]["chapters"] == 2 and job["summary"]["characters"] > 500
 
     # The voice worker: a token is required, no Origin is needed, and claims go by engine.
@@ -263,3 +264,27 @@ def test_local_mode_end_to_end(tmp_path: Path):
         time.sleep(0.2)
     assert c.post("/api/voice/claim", json={"engines": ["edge"]}).json()["id"] == audio["id"]
     app.state.worker.stop.set()
+
+
+def test_a_failed_audiobook_is_tried_again_as_the_same_job(tmp_path: Path):
+    # The same job, so the voice worker continues from the chapters it already made; a new request starts over.
+    site = _site(tmp_path)
+    admin = site.client("admin@example.com")
+    source = _done_book(site, admin)
+    audio = admin.post(f"/api/jobs/{source}/audiobook", json={"engine": "blue", "voice": "noa"}).json()
+    assert admin.post(f"/api/jobs/{source}/retry").status_code == 409  # not an audiobook
+    _prepare(site, audio["id"])
+    assert admin.post(f"/api/jobs/{audio['id']}/retry").status_code == 409  # not failed
+    voice = _voice(site)
+    assert voice.post("/api/voice/claim", json={"engines": ["blue"]}).json()["id"] == audio["id"]
+    assert voice.post(f"/api/voice/jobs/{audio['id']}/progress", json={"done": 1_000, "total": 4_000}).status_code == 200
+    assert voice.post(f"/api/voice/jobs/{audio['id']}/fail", json={"message": "invalid expand shape"}).status_code == 200
+    assert admin.get(f"/api/jobs/{audio['id']}").json()["status"] == "failed"
+
+    retried = admin.post(f"/api/jobs/{audio['id']}/retry")
+    assert retried.status_code == 200 and retried.json()["status"] == "queued" and retried.json()["error"] == ""
+    assert retried.json()["pending"] == "speak"  # its text is ready: straight back to the voice worker
+    left = retried.json()["seconds_left"]  # what is left at the speed the workers measured, not the first estimate
+    assert left == estimate(3_000, audio["options"], {})["making_seconds"] > 0
+    assert voice.post("/api/voice/claim", json={"engines": ["blue"]}).json()["id"] == audio["id"]
+    assert site.db.audit_rows(action="job.retry")

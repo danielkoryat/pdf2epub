@@ -137,15 +137,18 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
 
     def public(job: Job) -> dict:
         data = job.public(library.queue_position(job))
-        if job.kind == "audio" and job.status == "building" and job.pending == "speak" and job.total:
-            # What is left to read, at the speed the reading worker measured (a laptop's GPU is many times
-            # faster than the server; the estimate made when the book was queued did not know which would read it).
-            # The worker sends its speed of the last few minutes; until then, what it measured on earlier books.
+        if job.kind == "audio" and job.pending == "speak" and job.status in ("queued", "building"):
+            # What is left to read, at the speed the worker measured (a laptop's GPU is many times faster than
+            # the server; the estimate made when the book was queued did not know which would read it). While
+            # reading, the worker sends its speed of the last few minutes; until then, and while the book waits,
+            # what the workers measured on earlier books. A book tried again has fewer letters left.
             key = f"{job.options['engine']}/{job.options['quality']}"
-            reading = [w for w in db.voice_workers() if w["name"] == job.worker] or voice_api.online_workers(db)
-            speed = job.speed or measured_speeds(reading).get(key)
-            data["seconds_left"] = estimate(max(job.total - job.done, 0), job.options, {key: speed} if speed else {})["making_seconds"]
-            data["speed"] = speed
+            building = job.status == "building"
+            workers = [w for w in db.voice_workers() if building and w["name"] == job.worker] or voice_api.online_workers(db)
+            speed = (job.speed if building else None) or measured_speeds(workers).get(key)
+            left = job.total - job.done if job.total else (job.summary or {}).get("characters", 0)
+            data["seconds_left"] = estimate(max(left, 0), job.options, {key: speed} if speed else {})["making_seconds"]
+            data["speed"] = speed if building else None
         return data
 
     # -- pages and sign-in ---------------------------------------------------------------------------------
@@ -479,6 +482,20 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
         library.submit(job)
         auth.audit(request, user, "job.audiobook", target=job.id, source=source.id, engine=options["engine"], voice=options["voice"])
         return public(job)
+
+    @app.post("/api/jobs/{job_id}/retry")
+    def retry_audiobook(job_id: str, request: Request, user: dict = Depends(writer)) -> dict:
+        """Try a failed audiobook again as the same job, so the voice worker continues from the chapters it
+        already made (a new request would start the book over)."""
+        if not audiobooks_for(user):
+            raise HTTPException(404, "Not found")
+        job = owned(job_id, user)
+        if job.kind != "audio" or job.status != "failed":
+            raise HTTPException(409, "Only an audiobook that failed can be tried again")
+        pending = "speak" if library.script_path(job).is_file() else "prepare"
+        db.update_job(job.id, status="queued", pending=pending, worker="", error="", attempts=0, speed=None)
+        auth.audit(request, user, "job.retry", target=job.id)
+        return public(library.get(job.id))
 
     @app.get("/api/jobs/{job_id}/audiobook")
     def download_audiobook(job_id: str, request: Request, user: dict = Depends(auth.user)) -> FileResponse:

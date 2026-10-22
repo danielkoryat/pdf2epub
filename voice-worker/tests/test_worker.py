@@ -190,3 +190,30 @@ def test_blue_reads_long_paragraphs_in_pieces():
     asked.clear()
     engine.synthesize(sentence, "he", "noa", 1.0, "smooth")
     assert asked == [tag_latin(sentence)]  # an ordinary paragraph is read as before
+
+
+@needs_ffmpeg
+def test_a_stuck_engine_ends_the_worker_to_be_started_again(tmp_path: Path, monkeypatch):
+    # A worker once hung inside a library while its heartbeats went on: nothing read for too long ends the process.
+    import threading
+
+    from pdf2epub_voice import reader as reader_module
+
+    site = FakeSite()
+    client = Client("https://site.test", "t" * 40, "laptop", transport=httpx.MockTransport(site))
+    released, exits = threading.Event(), []
+    monkeypatch.setattr(reader_module, "PROGRESS_SECONDS", 0.05)
+    monkeypatch.setattr(reader_module, "_exit", lambda code: (exits.append(code), released.set()))
+    tone = Tone()
+    original = tone.synthesize
+
+    def hang_once(*a):
+        if not tone.calls:
+            released.wait(10)  # stuck until the watchdog acts (here it lets go instead of ending the tests)
+        return original(*a)
+
+    tone.synthesize = hang_once
+    Reader(client, Engines(tone), tmp_path, stall_seconds=0.3).read(client.claim(["blue"], {}))
+    assert exits == [reader_module.EXIT_STALLED]
+    assert any("starting the voice worker again" in line for p in site.progress for line in p["log"])
+

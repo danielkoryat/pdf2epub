@@ -4,6 +4,12 @@ Each finished chapter is kept as a FLAC file in a folder for the job, so a job t
 slept, the worker restarted) and claimed again continues from the first unfinished chapter. Progress goes to
 the site every few seconds from a separate thread; it also tells the site the worker is still alive, and its
 answer tells the worker when the owner has deleted the job.
+
+Being alive is not the same as reading: a worker once hung for good loading a library, while that thread kept
+telling the site all was well. So the same thread watches the reading too, and when nothing has been read for
+STALL_SECONDS it ends the process with EXIT_STALLED. Whatever runs the worker starts it again (the local app,
+or Docker on the server); the site queues the book again once the heartbeats stop, and it continues from its
+finished chapters.
 """
 
 from __future__ import annotations
@@ -11,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import shutil
 import threading
 import time
@@ -28,6 +35,10 @@ from .text import PAUSE_BREAK, PAUSE_CHAPTER, PAUSE_HEADING, PAUSE_PARAGRAPH, ch
 log = logging.getLogger(__name__)
 
 PROGRESS_SECONDS = 10
+# The longest a single paragraph may take: about 5 minutes for the longest paragraphs on the server's processor,
+# and Chatterbox makes a sentence up to three times.
+STALL_SECONDS = 20 * 60
+EXIT_STALLED = 3  # the exit code that asks to be started again
 KEEP_DAYS = 14  # unfinished work of jobs that never came back is removed after this
 
 
@@ -36,9 +47,12 @@ class Cancelled(Exception):
 
 
 class _Progress(threading.Thread):
-    def __init__(self, client: Client, job_id: str, total: int):
+    def __init__(self, client: Client, job_id: str, total: int, stall_seconds: float = STALL_SECONDS):
         super().__init__(daemon=True)
         self.client, self.job_id, self.total = client, job_id, total
+        self.stall_seconds = stall_seconds
+        self.active = time.monotonic()  # when the last paragraph started or finished
+        self.reading = True  # watched for stalls only while reading: building the M4B takes long too
         self.done = 0
         self.lines: list[str] = []
         self.cancelled = threading.Event()
@@ -50,9 +64,22 @@ class _Progress(threading.Thread):
         with self.lock:
             self.lines.append(f"{time.strftime('%H:%M:%S')} {line}")
 
+    def touch(self) -> None:
+        self.active = time.monotonic()
+
     def run(self) -> None:
         while not self.stopped.wait(PROGRESS_SECONDS):
+            if self.reading and time.monotonic() - self.active > self.stall_seconds:
+                self.stall()
+                return
             self.send()
+
+    def stall(self) -> None:
+        minutes = (time.monotonic() - self.active) / 60
+        log.error("Nothing read for %.0f minutes: the voice engine is stuck. Stopping, to be started again", minutes)
+        self.say(f"Nothing was read for {minutes:.0f} minutes; starting the voice worker again")
+        self.send()
+        _exit(EXIT_STALLED)
 
     def send(self) -> None:
         with self.lock:
@@ -94,11 +121,13 @@ class Speeds:
 
 
 class Reader:
-    def __init__(self, client: Client, engines: Engines, cache: Path, speeds: Speeds | None = None):
+    def __init__(self, client: Client, engines: Engines, cache: Path, speeds: Speeds | None = None,
+                 stall_seconds: float = STALL_SECONDS):
         self.client = client
         self.engines = engines
         self.cache = cache
         self.speeds = speeds
+        self.stall_seconds = stall_seconds
 
     def read(self, job: dict[str, Any]) -> None:
         job_id, o = job["id"], job["options"]
@@ -112,9 +141,10 @@ class Reader:
         chapters = script["chapters"]
         lang = script["language"]
         total = sum(len(ch["title"]) + sum(len(p["text"]) for p in ch["paragraphs"]) for ch in chapters)
-        progress = _Progress(self.client, job_id, total)
+        progress = _Progress(self.client, job_id, total, self.stall_seconds)
         engine = self.engines.get(o["engine"])
         progress.say(f"Reading {len(chapters)} chapters with {o['engine']} / {o['voice']}" + (f" (attempt {job['attempts']})" if job.get("attempts", 1) > 1 else ""))
+        progress.touch()  # loading the engine (a download, the first time) is not reading
         progress.start()
         started = time.monotonic()
         try:
@@ -139,6 +169,7 @@ class Reader:
                     elapsed = time.monotonic() - started
                     progress.say(f"Chapter {n + 1} of {len(chapters)}: {title} ({seconds / 60:.0f} min of audio, {elapsed / 60:.0f} min so far)")
                 done.append(ChapterAudio(title, path, seconds))
+            progress.reading = False
             progress.say("Building the audiobook file")
             out = work / "book.m4b"
             build_m4b(done, script["title"], script["authors"], lang, cover, out)
@@ -159,7 +190,10 @@ class Reader:
         def speak(text: str, text_lang: str) -> np.ndarray:
             if progress.cancelled.is_set():
                 raise Cancelled
-            return engine.synthesize(text, text_lang, o["voice"], o["speed"], o["quality"])
+            progress.touch()
+            audio = engine.synthesize(text, text_lang, o["voice"], o["speed"], o["quality"])
+            progress.touch()
+            return audio
 
         parts: list[np.ndarray] = []
         if opening is not None:  # the book opens with its title and author
@@ -197,6 +231,13 @@ class Reader:
         for folder in self.cache.iterdir():
             if folder != keep and folder.is_dir() and folder.stat().st_mtime < cutoff:
                 shutil.rmtree(folder, ignore_errors=True)
+
+
+def _exit(code: int) -> None:
+    """End the whole process at once: the thread that is stuck cannot be stopped any other way. (No
+    logging.shutdown(): it waits for the handlers' locks, which the stuck thread may hold. Each line is written
+    to the log file as it is logged.)"""
+    os._exit(code)
 
 
 def _lang_of(text: str, default: str) -> str:

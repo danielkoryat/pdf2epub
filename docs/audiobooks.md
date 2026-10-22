@@ -43,6 +43,9 @@ Where the voices are made:
 * **The local app** (the desktop shortcut) makes them on your computer: it starts the voice worker when it
   starts and stops it when its window is closed, so Chatterbox can use the GPU. Nothing runs in the
   background when the app is closed.
+* **A stuck worker** (nothing read for 20 minutes: a library once hung for good while loading) stops with
+  exit code 3 and is started again, by the local app or by Docker on the server; the site queues the book
+  again and it continues from its finished chapters.
 
 * **The text** (`src/pdf2epub/narration.py`) comes from the EPUB, so converted and uploaded books are read
   the same way. Chapters follow the book's contents, including entries that point into the middle of a file.

@@ -547,12 +547,14 @@ def _voice_worker_python() -> Path | None:
 
 
 _voice_worker: subprocess.Popen | None = None  # kept, so its standard input stays open while the app runs
+VOICE_WORKER_STALLED = 3  # the worker's exit code when its voice engine got stuck (pdf2epub_voice.reader.EXIT_STALLED)
 
 
 def _start_voice_worker(python: Path, url: str) -> None:
     """Local mode: make the audiobook voices on this computer while the app runs. The worker stops when its
     standard input closes, which happens when this process ends in any way. It starts once the app answers, so
-    its first look for work does not fail."""
+    its first look for work does not fail, and again whenever it stops because its voice engine got stuck (it
+    then continues the book from its finished chapters)."""
     import time
 
     global _voice_worker
@@ -562,9 +564,13 @@ def _start_voice_worker(python: Path, url: str) -> None:
         if time.monotonic() > deadline:
             return
         time.sleep(0.5)
-    _voice_worker = subprocess.Popen([str(python), "-X", "utf8", "-m", "pdf2epub_voice", "run", "--url", url, "--with-app"],
-                                     cwd=python.parents[2], stdin=subprocess.PIPE)
-    print("The voice worker is making audiobook voices on this computer")
+    while True:
+        _voice_worker = subprocess.Popen([str(python), "-X", "utf8", "-m", "pdf2epub_voice", "run", "--url", url, "--with-app"],
+                                         cwd=python.parents[2], stdin=subprocess.PIPE)
+        print("The voice worker is making audiobook voices on this computer")
+        if _voice_worker.wait() != VOICE_WORKER_STALLED:
+            return
+        print("The voice worker got stuck; starting it again")
 
 
 def main(argv: list[str] | None = None) -> int:

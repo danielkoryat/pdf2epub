@@ -191,3 +191,21 @@ def test_upload_rejects_other_files(tmp_path: Path):
     assert res.status_code == 400
     res = client.post("/api/jobs", files={"file": ("x.txt", b"hello world", "text/plain")})
     assert res.status_code == 400
+
+
+def test_local_voice_worker_is_started_again_only_when_it_got_stuck(monkeypatch, tmp_path: Path):
+    from pdf2epub.web import server
+
+    codes, started = [server.VOICE_WORKER_STALLED, 0], []
+
+    class FakeWorker:
+        def __init__(self, args, **kwargs):
+            started.append(args)
+
+        def wait(self):
+            return codes.pop(0)
+
+    monkeypatch.setattr(server, "_is_pdf2epub", lambda url: True)
+    monkeypatch.setattr(server.subprocess, "Popen", FakeWorker)
+    server._start_voice_worker(tmp_path / "a" / "b" / "python.exe", "http://127.0.0.1:5050")
+    assert len(started) == 2 and not codes  # stuck once: started again; a normal stop: not

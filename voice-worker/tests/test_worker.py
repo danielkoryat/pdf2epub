@@ -316,3 +316,32 @@ def test_audio_encoded_while_reading_keeps_chapters_in_place(tmp_path: Path):
                                       capture_output=True, check=True).stdout)
     assert abs(float(probe["format"]["duration"]) - 60.0) < 0.1
     assert [round(float(c["start_time"])) for c in probe["chapters"]] == [0, 20, 40]
+
+
+def test_hebrew_numbers_are_spelled_out_with_their_prefix():
+    # BlueTTS's Hebrew model reads words: digits came out mumbled. A prefix stays on its number.
+    from pdf2epub_voice.engines.blue import spell_out
+
+    assert spell_out("לפני 14,000 שנה") == "לפני ארבעה עשר אלף שנה"
+    assert spell_out("לפני כ-70,000 שנה") == "לפני כשבעים אלף שנה"
+    assert spell_out("ב-1492 הגיע קולומבוס") == "באלף ארבע מאות תשעים ושתיים הגיע קולומבוס"
+    assert spell_out("המאה ה-15") == "המאה החמש עשרה"
+    assert spell_out("ספר בלי מספרים, רק מילים.") == "ספר בלי מספרים, רק מילים."  # nothing else changes
+
+
+def test_blue_gets_no_digits_in_hebrew():
+    from pdf2epub_voice.engines.blue import BlueEngine
+
+    asked: list[str] = []
+
+    def tts(text, **kwargs):
+        asked.append(text)
+        return np.ones((1, 100), dtype=np.float32), None
+
+    engine = object.__new__(BlueEngine)
+    engine.tts, engine.rate, engine._styles = tts, RATE, {"noa": None}
+    engine.synthesize("לפני כ-70,000 שנה, ובשנת 1914, 50% מהם.", "he", "noa", 1.0, "smooth")
+    assert asked and not any(ch.isdigit() for a in asked for ch in a)
+    asked.clear()
+    engine.synthesize("In 1914 about 70,000 people.", "en", "noa", 1.0, "smooth")
+    assert asked == ["In 1914 about 70,000 people."]  # English numbers are left to espeak

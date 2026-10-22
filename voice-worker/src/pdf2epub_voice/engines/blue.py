@@ -8,6 +8,7 @@ files in the BlueTTS repository, fetched at the commit the package is installed 
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import httpx
@@ -17,6 +18,12 @@ from ..audio import resample
 from ..text import PAUSE_SENTENCE, groups, strip_niqqud, tag_latin
 
 log = logging.getLogger(__name__)
+
+# A Hebrew prefix joined to a number with a hyphen (כ-70,000, ב-1492, ה-15): it is kept on the spelled-out number
+# (כשבעים אלף), not left on its own, where the voice reads the letter.
+_PREFIX_NUMBER = re.compile(r"(?<![\w֐-׿])([ובכלמשה]{1,3})[-־](?=\d)")
+_JOIN = ""  # holds the prefix's place through the normalizer
+_JOINED = re.compile(r"([ובכלמשה]{1,3})" + _JOIN + r"\s*(【?)")  # the prefix goes inside a slow-reading mark
 
 MODEL_REPO = "notmax123/BlueTTS2.5-onnx"
 MODEL_REVISION = "468da64b4a51795a7594a3637727dbaf876b6df2"
@@ -66,10 +73,14 @@ class BlueEngine:
     def synthesize(self, text: str, lang: str, voice: str, speed: float, quality: str) -> np.ndarray:
         from blue_onnx import limit_peak
 
-        if lang == "he":
-            text = strip_niqqud(text)
+        if lang == "he":  # English goes through espeak, which reads numbers well (and years as years)
+            text = spell_out(strip_niqqud(text))  # before cutting: spelled-out numbers take room
         parts: list[np.ndarray] = []
         for piece in groups(text, PIECE_CHARS):
+            if piece.count("【") != piece.count("】"):  # cut inside a number marked to be read slowly
+                from blue_onnx.text_norm import strip_slow_markers
+
+                piece = strip_slow_markers(piece).replace("【", "").replace("】", "")
             if parts:
                 parts.append(np.zeros(int(PAUSE_SENTENCE * self.rate), dtype=np.float32))
             audio, _ = self.tts(tag_latin(piece) if lang == "he" else piece, lang=lang, style=self.style(voice), total_step=STEPS,
@@ -77,6 +88,16 @@ class BlueEngine:
             audio = np.asarray(audio, dtype=np.float32)
             parts.append(audio[0] if audio.ndim == 2 else audio)
         return resample(limit_peak(np.concatenate(parts)), self.rate)
+
+
+def spell_out(text: str) -> str:
+    """Hebrew numbers, dates, times, percentages and codes in words, by BlueTTS's own normalizer (which it leaves
+    off unless asked): its Hebrew letters-to-sounds model reads words, and digits came out mumbled or not at all.
+    Gender is not known: "3 ילדים" is read "שלוש ילדים"."""
+    from blue_onnx.text_norm import prepare_text_for_synthesis
+
+    text = prepare_text_for_synthesis(_PREFIX_NUMBER.sub(lambda m: m.group(1) + _JOIN, text), lang="he")
+    return _JOINED.sub(r"\2\1", text).replace(_JOIN, "")
 
 
 def _load_on_gpu(onnx_dir: str):

@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "Book Listen",
+    "slug": "book-listen",
+    "version": "0.5.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "booklisten",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0F1211",
+    "ios": {
+      "bundleIdentifier": "org.pdf2epub.listen",
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "org.pdf2epub.listen",
+      "versionCode": 5,
+      "adaptiveIcon": {
+        "backgroundColor": "#14261C",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "plugins": [
+      "expo-router",
+      ["expo-audio", { "enableBackgroundPlayback": true }],
+      "expo-image",
+      "./plugins/with-local-debug-key"
+    ]
+  }
+}

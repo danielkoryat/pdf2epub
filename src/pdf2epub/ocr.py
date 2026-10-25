@@ -21,6 +21,7 @@ import csv
 import io
 import logging
 import os
+import re
 import statistics
 import subprocess
 import tempfile
@@ -50,6 +51,20 @@ RETRY_MIN_WORDS = 15
 # ...and Tesseract is reasonably sure about the script.
 MIN_SCRIPT_CONFIDENCE = 2.0
 MAX_DPI = 300
+
+# Tesseract's right-to-left models keep only the end of some numbers: in Sapiens 13.5 came out as 5, 500,000 and
+# 10,000 as 0, all through the book. The English model reads them whole, so a number found on a right-to-left
+# page is read again with it, digits only. The lost digits are on the left of the kept ones (a number runs left
+# to right), up to the neighbouring word.
+RTL_TESS_LANGS = {"heb", "yid", "ara", "fas", "urd", "pus", "snd", "uig", "div", "syr"}
+NUMBER_LANG = "eng"
+MIN_NUMBER_CONFIDENCE = 60.0
+_NUMBER_WORD = re.compile(r"(?P<pre>[(\[\"'״]*)(?P<num>\d(?:[\d.,]*\d)?)(?P<post>[.,;:!?)\]\"'״]*)")
+_WELL_FORMED = re.compile(r"(?:[1-9]\d{0,2}(?:,\d{3})+|[1-9]\d*|0)(?:\.\d+)?")
+# ...and they read the hyphen between a Hebrew prefix and a number as a letter or a sign: המאה הך20, לד2500,
+# ה+11, כ*70. A prefix is a run of these letters in this order; ד and ך never stand before a digit otherwise.
+_MARK = re.compile(r"[|ךםןףץ]+")
+_GLUED_NUMBER = re.compile(r"(?P<prefix>ו?(?:ש|כש|מש)?[כלבמ]?ה?)[ךד+*\"״](?=\d)")
 
 
 @dataclass
@@ -171,6 +186,28 @@ def _mean_conf(words: list[_Word]) -> float:
     return sum(w.conf for w in words) / len(words) if words else 0.0
 
 
+def _is_mark(w: _Word) -> bool:
+    text = re.sub(r"[\s‎‏‪-‮]", "", w.text)  # Tesseract may put spaces and direction marks in a word
+    return not text or _MARK.fullmatch(text) is not None or (text in ("=", "ר", "ד") and w.conf < MIN_NUMBER_CONFIDENCE)
+
+
+def unglue_number(text: str) -> str:
+    """הך20 -> ה-20: the hyphen Tesseract read as a letter or a sign, between a Hebrew prefix and a number."""
+    m = _GLUED_NUMBER.match(text)
+    return f"{m['prefix']}-{text[m.end():]}" if m and m["prefix"] else text
+
+
+def completed_number(kept: str, read: str) -> str | None:
+    """The whole number in `read` (the English model's reading of the spot) when it is a well-formed number that
+    ends with the digits Tesseract kept, else None. Digits picked up in front of it (a speck, the line above)
+    make it malformed, and the shortest well-formed ending is taken: 2500,000 -> 500,000."""
+    for start in range(len(read)):
+        tail = read[start:]
+        if _WELL_FORMED.fullmatch(tail) and tail.endswith(kept) and len(tail) > len(kept):
+            return tail
+    return None
+
+
 class PageTesseractModel(BaseOcrModel):
     def __init__(self, *, enabled: bool, artifacts_path: Path | None, options: PageTesseractOptions, accelerator_options: Any):
         super().__init__(enabled=enabled, artifacts_path=artifacts_path, options=options, accelerator_options=accelerator_options)
@@ -236,6 +273,64 @@ class PageTesseractModel(BaseOcrModel):
             log.info("page %d: re-OCR'd with better result (confidence %.0f -> %.0f)", job.page.page_no, conf, best_conf)
         return best_words
 
+    def _ocr_job_with_numbers(self, job: _Job) -> list[_Word]:
+        words = self._ocr_job(job)
+        if RTL_TESS_LANGS.isdisjoint(self.options.lang):
+            return words
+        # Rules and arrows of a table read as letters (the timeline's border as |, its arrows as ך or =): a lone
+        # final letter or bar is never a word, and the narration would read it.
+        words = [w for w in words if not _is_mark(w)]
+        for w in words:
+            w.text = unglue_number(w.text)
+        # Every cut-short number came out as its last digit alone (13.5 -> 5, 500,000 -> 0); longer ones are whole,
+        # and reading them again only risks a mark beside them read as a digit (1800! -> 11800).
+        numbers = [w for w in words if (m := _NUMBER_WORD.fullmatch(w.text)) and len(m["num"]) == 1]
+        if numbers:
+            fixed = self._complete_numbers(job, words, numbers)
+            if fixed:
+                log.info("page %d: %d numbers read whole by the %s model", job.page.page_no, fixed, NUMBER_LANG)
+        return words
+
+    def _complete_numbers(self, job: _Job, words: list[_Word], numbers: list[_Word]) -> int:
+        from PIL import Image
+
+        from .ocrlang import ensure_tessdata
+
+        with self._lock:
+            try:
+                ensure_tessdata([NUMBER_LANG])
+            except RuntimeError as exc:
+                log.warning("%s", exc)
+                return 0
+        fixed = 0
+        with Image.open(job.image_path) as image:
+            for n, w in enumerate(numbers):
+                parts = _NUMBER_WORD.fullmatch(w.text)
+                h, middle = w.height, w.top + w.height / 2
+                beside = [o.left + o.width for o in words if o is not w and o.left + o.width <= w.left + 2
+                          and abs(o.top + o.height / 2 - middle) < h]
+                left = max(max(beside, default=0.0) + 2, w.left - 8 * h, 0)
+                box = (int(left), int(max(0, w.top - h / 4)), int(min(image.width, w.left + w.width + h / 3)),
+                       int(min(image.height, w.top + w.height + h / 4)))
+                crop = job.image_path.with_name(f"{job.image_path.stem}_n{n}.png")
+                image.crop(box).save(crop)
+                # Punctuation is allowed so that a mark beside the number is read as itself, not as a digit.
+                cmd = [self.options.tesseract_cmd, str(crop), "stdout", "-l", NUMBER_LANG, "--psm", "7",
+                       "-c", "tessedit_char_whitelist=0123456789.,!?;:()[]\"'-"]
+                if self.options.tessdata:
+                    cmd += ["--tessdata-dir", self.options.tessdata]
+                proc = subprocess.run([*cmd, "tsv"], capture_output=True, env=self._env)
+                read = parse_tsv(proc.stdout.decode("utf-8", "replace")) if proc.returncode == 0 else []
+                if not read or _mean_conf(read) < MIN_NUMBER_CONFIDENCE:
+                    continue
+                # The run of digits that ends where the kept ones are: the rightmost.
+                runs = re.findall(r"\d[\d.,]*\d|\d", "".join(r.text for r in read).replace(" ", ""))
+                whole = completed_number(parts["num"], runs[-1]) if runs else None
+                if whole:
+                    w.text = parts["pre"] + whole + parts["post"]
+                    fixed += 1
+        return fixed
+
     # -- Docling interface ----------------------------------------------------------------------------------
 
     def __call__(self, conv_res: ConversionResult, page_batch: Iterable[Page]) -> Iterable[Page]:
@@ -259,7 +354,7 @@ class PageTesseractModel(BaseOcrModel):
                     path = Path(tmp) / f"p{page.page_no}_{n}.png"
                     pix.save(path)
                     jobs.append(_Job(page, rect, path, zoom, (pix.width, pix.height)))
-            results = list(self._pool.map(self._ocr_job, jobs))
+            results = list(self._pool.map(self._ocr_job_with_numbers, jobs))
 
         cells_by_page: dict[int, list[TextCell]] = {id(p): [] for p in pages}
         for job, words in zip(jobs, results):

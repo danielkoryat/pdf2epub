@@ -193,6 +193,7 @@ async function loadInfo() {
     const info = await api("/api/info");
     INFO = info;
     MODE = info.mode;
+    $("#restart-app").classList.toggle("hidden", !info.can_restart);
     if (info.posthog) loadAnalytics(info.posthog);
     const chips = $("#chips");
     if (MODE === "server") { chips.replaceChildren(); return info; }
@@ -1257,3 +1258,23 @@ async function loadAdminJobs() {
   show("home");
   refreshJobs();
 })();
+
+$("#restart-app").addEventListener("click", async () => {
+  if (!confirm("Restart the app and audiobook voice worker to apply installed changes? Your saved books stay in the library.")) return;
+  const button = $("#restart-app"), status = $("#restart-status");
+  button.disabled = true;
+  status.textContent = "Restarting app and voices…";
+  try {
+    await api("/api/local/restart", { method: "POST", headers: { "X-PDF2EPUB-Instance": INFO.instance } });
+    const deadline = Date.now() + 90000;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      try {
+        const response = await fetch("/api/info", { cache: "no-store", signal: AbortSignal.timeout(3000) });
+        if (response.ok && (await response.json()).instance !== INFO.instance) { location.reload(); return; }
+      } catch { /* temporarily offline */ }
+    }
+    status.textContent = "The app has not returned yet. Open the PDF to EPUB desktop shortcut to start it.";
+  } catch (error) { status.textContent = error.message; }
+  button.disabled = false;
+});

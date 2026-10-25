@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import secrets
 import logging
 import os
 import re
@@ -93,6 +94,25 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
 
     app = FastAPI(title="pdf2epub", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings, app.state.db, app.state.library = settings, db, library
+    app.state.instance = secrets.token_hex(16)
+    app.state.restart_pending = False
+    restart_lock = threading.Lock()
+    app.state.local_writes = 0
+
+    @app.middleware("http")
+    async def restart_guard(request: Request, call_next):
+        writing = not settings.server and request.method not in ("GET", "HEAD", "OPTIONS")
+        if writing:
+            with restart_lock:
+                if app.state.restart_pending:
+                    return JSONResponse({"detail": "App is restarting; please wait"}, status_code=503)
+                app.state.local_writes += 1
+        try:
+            return await call_next(request)
+        finally:
+            if writing:
+                with restart_lock:
+                    app.state.local_writes -= 1
     app.add_middleware(SecurityMiddleware, settings=settings)
     if settings.server:
         from starlette.middleware.sessions import SessionMiddleware
@@ -195,13 +215,34 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
             tesseract = True
         except RuntimeError:
             tesseract = False
-        data: dict[str, Any] = {"mode": settings.mode, "tesseract": tesseract, "epubcheck": epubcheck_available()}
+        data: dict[str, Any] = {"mode": settings.mode, "tesseract": tesseract, "epubcheck": epubcheck_available(),
+                                "instance": app.state.instance,
+                                "can_restart": not settings.server and hasattr(app.state, "restart")}
         if settings.server:
             data["guests"] = settings.allow_guests
             data["turnstile"] = settings.turnstile_site_key if settings.turnstile_secret else ""
         if settings.posthog_key:
             data["posthog"] = {"key": settings.posthog_key, "host": settings.posthog_host}
         return data
+
+    @app.post("/api/local/restart")
+    def restart(request: Request) -> dict:
+        if settings.server or not hasattr(app.state, "restart"):
+            raise HTTPException(404, "Restart is available only in the local desktop app")
+        if not request.client or request.client.host not in ("127.0.0.1", "::1"):
+            raise HTTPException(403, "Restart must be requested from this computer")
+        if request.headers.get("x-pdf2epub-instance") != app.state.instance:
+            raise HTTPException(403, "Refresh the page before restarting")
+        with restart_lock:
+            if app.state.restart_pending:
+                return {"restarting": True}
+            if app.state.local_writes > 1:
+                raise HTTPException(409, "Wait for the current upload or action to finish")
+            if db.query("SELECT id FROM jobs WHERE status IN ('queued','preparing','building') LIMIT 1"):
+                raise HTTPException(409, "Wait for queued or running conversions and audiobooks to finish before restarting")
+            app.state.restart_pending = True
+            threading.Timer(0.5, app.state.restart).start()
+        return {"restarting": True}
 
     def network(request: Request) -> str:
         return network_of(auth.client(request).ip)
@@ -641,7 +682,29 @@ def main(argv: list[str] | None = None) -> int:
         threading.Thread(target=_open_when_ready, args=(url,), daemon=True).start()
     if not settings.server and not args.no_voice_worker and (python := _voice_worker_python()):
         threading.Thread(target=_start_voice_worker, args=(python, url), daemon=True).start()
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning", proxy_headers=False, server_header=False)
+    server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port, log_level="warning", proxy_headers=False, server_header=False))
+    if not settings.server:
+        def request_restart():
+            server.should_exit = True
+        app.state.restart = request_restart
+    server.run()
+    if app.state.restart_pending:
+        # Closing stdin asks the owned voice worker to stop; never touch unrelated workers.
+        child = _voice_worker
+        if child is not None and child.poll() is None:
+            if child.stdin:
+                child.stdin.close()
+            try:
+                child.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=5)
+        arguments = list(argv if argv is not None else sys.argv[1:])
+        if "--no-browser" not in arguments:
+            arguments.append("--no-browser")
+        subprocess.Popen([sys.executable, "-m", "pdf2epub.web.server", *arguments], cwd=os.getcwd(),
+                         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+
     return 0
 
 

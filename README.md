@@ -71,6 +71,8 @@ and download the M4B when it is ready. The voices come from the voice worker in 
 with `scripts\install-voice-worker.ps1` and the local app starts it whenever it runs
 ([docs/audiobooks.md](docs/audiobooks.md)).
 
+**Apply local changes:** click **Restart app** in the top bar. It restarts the local server and its audiobook voice worker, then reloads the page. Wait for active uploads and jobs to finish first. This does not install updates or restart the public website.
+
 The library (title, author, language, status, the edits you made, and the result) is stored in
 `data/pdf2epub.db` (SQLite); the uploaded and produced files are kept in `data/jobs/`.
 
@@ -148,6 +150,9 @@ uv run --project voice-worker pytest   # the audiobook voice worker (its own env
 
 More background on the design decisions (and the approaches that were tried and dropped) is in
 [docs/DESIGN.md](docs/DESIGN.md).
+
+For correcting recurring Hebrew names and phrases in BlueTTS narration and
+running a before/after audio comparison, see [Hebrew pronunciation](docs/HEBREW-PRONUNCIATION.md).
 
 ## License
 

@@ -7,7 +7,7 @@ from pdf2epub.cleanup import clean
 from pdf2epub.extract import make_chunks
 from pdf2epub.lang import base_direction, direction_for_language, dominant_script, looks_visually_reversed
 from pdf2epub.model import NOTE_OPEN, Block, Book, Chapter, Kind
-from pdf2epub.ocr import group_paragraphs, parse_tsv
+from pdf2epub.ocr import completed_number, group_paragraphs, parse_tsv, unglue_number
 from pdf2epub.spell import Corrector
 from pdf2epub.structure import build_chapters
 from pdf2epub.validate import check_epub, epubcheck_available
@@ -164,6 +164,27 @@ def test_parse_tsv_and_group_paragraphs():
     assert [p.text for p in paras] == ["שלום עולם", "חדש"]
     assert paras[0].bbox == (50.0, 5.0, 125.0, 15.0)
     assert paras[0].size == 10.0
+
+
+def test_numbers_cut_short_by_hebrew_ocr_are_completed():
+    # Sapiens' timeline: Hebrew Tesseract kept only the last digit; the English model read the spot whole.
+    assert completed_number("5", "13.5") == "13.5"
+    assert completed_number("0", "500,000") == "500,000"
+    assert completed_number("0", "2500,000") == "500,000"  # a digit from the line above is not part of it
+    assert completed_number("1908", "1908") is None  # nothing was lost
+    assert completed_number("5", "3.4") is None  # not the number Tesseract saw
+    assert completed_number("0", "1,00") is None  # malformed: no guess
+
+
+def test_hyphen_read_as_a_letter_between_prefix_and_number():
+    assert unglue_number("הך20") == "ה-20"
+    assert unglue_number("לד2500") == "ל-2500"
+    assert unglue_number("ה+11") == "ה-11"
+    assert unglue_number('כ"250') == "כ-250"
+    assert unglue_number("כשב*1519") == "כשב-1519"
+    assert unglue_number("עד2500") == "עד2500"  # עד is a word, not a prefix and a hyphen
+    assert unglue_number("ד2500") == "ד2500"
+    assert unglue_number("*6700") == "*6700"
 
 
 # --- spelling -------------------------------------------------------------------------------------------

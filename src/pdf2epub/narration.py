@@ -36,6 +36,11 @@ _LEAF_BLOCKS = _HEADINGS | {"p", "li", "dt", "dd", "pre", "blockquote", "div", "
 _NOTE_MARK = re.compile(r"^\s*[\[(]?(\d{1,3}|[*\u2020\u2021\u00a7]{1,3}|[a-z])[\])]?\s*$")
 _INVISIBLE = re.compile("[\u00ad\u200b\u200c\u200d\u2060\ufeff]")
 _NOTE_REF = re.compile(re.escape(NOTE_OPEN) + ".*?" + re.escape(NOTE_CLOSE))
+_NUMBER = re.compile(r"\d+")
+_REFERENCE_TITLE = re.compile(
+    r"^\W*(?:מפתח|אינדקס|הערות|מראי מקום|מקורות|רשימת מקורות|ביבליוגרפיה|index|notes|endnotes|bibliography|references|sources|works cited)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -156,7 +161,8 @@ class _Reader:
                 self.start_chapter("")
             self.walk(body, {k: v for k, v in marks.items() if k})
         # A chapter with only a title (a part's title page) stays: the title is read.
-        return [ch for ch in self.chapters if ch.title or any(p.kind != "break" for p in ch.paragraphs)]
+        chapters = [ch for ch in self.chapters if ch.title or any(p.kind != "break" for p in ch.paragraphs)]
+        return _without_reference_matter(chapters)
 
     def start_chapter(self, title: str) -> None:
         if self.chapters and not any(p.kind != "break" for p in self.chapters[-1].paragraphs) and not self.chapters[-1].title:
@@ -206,6 +212,26 @@ class _Reader:
             self.fresh = False
         lang = language_of(text, self.language)
         chapter.paragraphs.append(Paragraph(text, lang, "heading" if heading else "p"))
+
+
+def _without_reference_matter(chapters: list[Chapter]) -> list[Chapter]:
+    """The book without its notes, bibliography and index, which no narrator reads: Sapiens' were 80 minutes of
+    page numbers and citations. They are known by their title, or, as OCR may garble the title, by being in the
+    second half of the book and dense with numbers (65 and 90 per 1,000 letters there; at most 8 in its
+    chapters, 16 in its timeline)."""
+    sizes = [len(ch.title) + sum(len(p.text) for p in ch.paragraphs) for ch in chapters]
+    total, before, kept = sum(sizes), 0, []
+    for ch, size in zip(chapters, sizes):
+        late = before >= total / 2
+        before += size
+        if late and (_REFERENCE_TITLE.search(ch.title) or (size >= 2000 and _numbers_per_1000(ch, size) >= 30)):
+            continue
+        kept.append(ch)
+    return kept
+
+
+def _numbers_per_1000(ch: Chapter, size: int) -> float:
+    return 1000 * sum(len(_NUMBER.findall(p.text)) for p in ch.paragraphs) / max(size, 1)
 
 
 def _local(tag) -> str:

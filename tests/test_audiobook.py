@@ -288,3 +288,18 @@ def test_a_failed_audiobook_is_tried_again_as_the_same_job(tmp_path: Path):
     assert left == estimate(3_000, audio["options"], {})["making_seconds"] > 0
     assert voice.post("/api/voice/claim", json={"engines": ["blue"]}).json()["id"] == audio["id"]
     assert site.db.audit_rows(action="job.retry")
+
+
+def test_notes_and_index_are_not_read():
+    from pdf2epub import narration as n
+
+    def chapter(title, text, times=1):
+        return n.Chapter(title, [n.Paragraph(text, "he")] * times)
+
+    prose = "המהפכה החקלאית שינתה את חייהם של בני האדם לפני כעשרת אלפים שנה, ולא תמיד לטובה. " * 30
+    book = [chapter("ציר הזמן", "13.5 מיליארד שנה המפץ הגדול. 70,000 שנה המהפכה הלשונית."),
+            chapter("פרק 1", prose), chapter("פרק 2", prose), chapter("פרק 3", prose),
+            chapter('DIPD "XID', "Hassan, Demographic Archaeology (1981), 196-9; 2001, 143. ", 40),  # garbled "הערות"
+            chapter("מפתח השמות והעניינים", "חקלאות 105-104, 108, 109, 111 תנאי חיים 86, 87, 88 ", 40)]
+    assert [c.title for c in n._without_reference_matter(book)] == ["ציר הזמן", "פרק 1", "פרק 2", "פרק 3"]
+    assert [c.title for c in n._without_reference_matter([chapter("הערות", prose), *book[1:4]])][0] == "הערות"  # early: kept

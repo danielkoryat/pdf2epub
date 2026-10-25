@@ -1,0 +1,15 @@
+plugins { id 'com.android.application' }
+android {
+ namespace 'org.pdf2epub.listen'
+ compileSdk 35
+ defaultConfig { applicationId 'org.pdf2epub.listen'; minSdk 26; targetSdk 35; versionCode 4; versionName '0.4' }
+ compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
+dependencies {
+ implementation 'androidx.media3:media3-exoplayer:1.6.1'
+ implementation 'androidx.media3:media3-session:1.6.1'
+}
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
+
+
+dependencies { testImplementation 'junit:junit:4.13.2'; testImplementation 'org.json:json:20240303' }

@@ -1,0 +1,22 @@
+<resources>
+<color name="icon_background">#14261C</color>
+<style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
+<item name="android:fontFamily">sans</item>
+<item name="android:colorAccent">#78EFA3</item>
+<item name="android:windowLightStatusBar">false</item>
+<item name="android:windowBackground">#0F1211</item>
+<item name="android:statusBarColor">#0F1211</item>
+<item name="android:navigationBarColor">#161A18</item>
+<item name="android:alertDialogTheme">@style/Dialog</item>
+<item name="android:popupMenuStyle">@style/Popup</item>
+</style>
+<style name="Dialog" parent="android:style/Theme.Material.Dialog.Alert">
+<item name="android:colorAccent">#78EFA3</item>
+<item name="android:colorBackground">#1B201D</item>
+<item name="android:textColorPrimary">#F2F5F1</item>
+<item name="android:textColorSecondary">#A3AEA7</item>
+</style>
+<style name="Popup" parent="android:style/Widget.Material.PopupMenu">
+<item name="android:popupBackground">@drawable/popup</item>
+</style>
+</resources>

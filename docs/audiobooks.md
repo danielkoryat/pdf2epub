@@ -4,6 +4,10 @@ A finished book (a PDF converted here, or an EPUB uploaded and enriched) can be 
 audiobook: one file with chapter marks, the cover and the title, which audiobook apps (Apple Books,
 BookPlayer, Smart AudioBook Player, VLC) open as a book. Hebrew and English.
 
+"Edit details" on a finished audiobook changes its title, author and cover. They are written into the M4B's
+tags (mutagen, in `web/m4b.py`), so the sound, chapter marks and read-along text stay as they are, and saving
+takes a second or two even for a 400 MB book.
+
 ## Voices
 
 | Engine | What it is | Speed on a laptop (RTX 2000 Ada) | On the site's server (2 ARM cores) | License |

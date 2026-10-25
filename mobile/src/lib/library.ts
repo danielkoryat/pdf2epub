@@ -174,10 +174,16 @@ function describe(file: File): Book {
       book.duration = details.duration;
       book.chapters = details.chapters;
       book.text = details.text;
+      const folder = coverFolder();
+      // A changed file (a book imported again under the same name) gets a cover of a new name: the image
+      // view caches pictures by address and would keep showing the old one.
+      if (folder.exists)
+        for (const old of folder.list())
+          if (old instanceof File && old.name.startsWith(`${file.name}.`)) old.delete();
       if (details.cover) {
-        const folder = coverFolder();
         if (!folder.exists) folder.create({ intermediates: true });
-        const cover = new File(folder, `${file.name}.${details.cover.png ? 'png' : 'jpg'}`);
+        const version = `${file.size}-${Math.round(file.modificationTime ?? 0)}`;
+        const cover = new File(folder, `${file.name}.${version}.${details.cover.png ? 'png' : 'jpg'}`);
         cover.writeSync(details.cover.bytes);
         book.cover = cover.uri;
       }
@@ -217,9 +223,17 @@ export function sorted(books: Book[], progress: Record<string, Progress>) {
   return [...books].sort((a, b) => recent(b) - recent(a));
 }
 
+/** Told before a book goes, and of the book that takes its place (the player lets go of the file). */
+let removing: (id: string, replacement: Book | null) => void = () => undefined;
+
+export function whenRemoving(handler: typeof removing) {
+  removing = handler;
+}
+
 export function deleteBook(id: string) {
   const book = state.books.find((b) => b.id === id);
   if (!book) return;
+  removing(id, null);
   for (const uri of [book.uri, book.uri + '.vtt', book.cover]) {
     if (!uri) continue;
     const file = new File(uri);
@@ -274,7 +288,12 @@ export async function importBook() {
     if (cancelled) throw new Error('Cancelled');
     partial.moveSync(target);
     scan();
-    setImport({ busy: false, message: `Ready to listen · ${name}`, added: target.name });
+    const replaced = replaceOlderCopy(target);
+    setImport({
+      busy: false,
+      message: replaced ? `Updated · ${replaced} · your place is kept` : `Ready to listen · ${name}`,
+      added: target.name,
+    });
   } catch (error) {
     if (partial.exists) partial.delete();
     setImport({
@@ -283,6 +302,45 @@ export async function importBook() {
       added: null,
     });
   }
+}
+
+/**
+ * A book imported again, say after its title or cover was changed on the site, replaces the copy the
+ * app already has, which keeps its place. The same book is the same sound: the same length and chapters
+ * (the same book read by another voice differs by minutes). Returns the replaced book's title.
+ */
+function replaceOlderCopy(file: File): string | null {
+  if (!/\.(m4b|m4a)$/i.test(file.name)) return null;
+  let details: Details;
+  try {
+    details = readDetails(file);
+  } catch {
+    return null;
+  }
+  const old = state.books.find(
+    (b) =>
+      b.id !== file.name &&
+      details.duration > 0 &&
+      Math.abs(b.duration - details.duration) < 1.5 &&
+      b.chapters.length === details.chapters.length,
+  );
+  const fresh = state.books.find((b) => b.id === file.name);
+  if (!old || !fresh) return null;
+  removing(old.id, fresh);
+  const attached = new File(old.uri + '.vtt'); // read-along text the listener attached by hand
+  if (attached.exists && !details.text) attached.moveSync(new File(file.uri + '.vtt'));
+  for (const uri of [old.uri, old.uri + '.vtt', old.cover]) {
+    if (!uri) continue;
+    const gone = new File(uri);
+    if (gone.exists) gone.delete();
+  }
+  const { [old.id]: place, ...progress } = state.progress;
+  update({
+    books: state.books.filter((b) => b.id !== old.id),
+    progress: place ? { ...progress, [file.name]: place } : progress,
+    last: state.last === old.id ? file.name : state.last,
+  });
+  return old.title;
 }
 
 /** Copies in pieces, so the progress shows and the import can be cancelled. */

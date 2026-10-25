@@ -6,7 +6,7 @@
 import { type AudioStatus, createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import { AppState } from 'react-native';
 import { useSyncExternalStore } from 'react';
-import { type Book, getState, progressOf, saveProgress, setDuration, setLast, subscribe } from './library';
+import { type Book, getState, progressOf, saveProgress, setDuration, setLast, subscribe, whenRemoving } from './library';
 
 export const SPEEDS = [0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2]; // Android plays at most 2x
 export const BACK = 15;
@@ -126,6 +126,15 @@ export async function startPlayer() {
   subscribe(() => {
     const book = playback.book && getState().books.find((b) => b.id === playback.book?.id);
     if (book && book !== playback.book) set({ book });
+  });
+  // A book about to be deleted or replaced by a newer copy: save the place in it and let go of its file;
+  // the newer copy opens where it was, playing if it was.
+  whenRemoving((id, replacement) => {
+    if (playback.book?.id !== id) return;
+    const playing = playback.playing;
+    remember(true);
+    close(id);
+    if (replacement) queueMicrotask(() => open(replacement, { play: playing }));
   });
   const { last, books } = getState();
   const book = books.find((b) => b.id === last);

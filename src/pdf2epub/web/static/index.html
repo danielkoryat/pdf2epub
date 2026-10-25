@@ -278,6 +278,37 @@
     <audio id="ab-audio" preload="none"></audio>
   </dialog>
 
+  <dialog id="details" aria-labelledby="d-head">
+    <form id="d-form">
+      <div class="dialog-head">
+        <h3 id="d-head">Audiobook details</h3>
+        <button class="ghost" type="button" id="d-close" aria-label="Close">✕</button>
+      </div>
+      <div class="dialog-body">
+        <div class="meta">
+          <div class="cover-box">
+            <img id="d-cover" alt="Cover" class="cover hidden">
+            <div id="d-nocover" class="nocover muted">No cover</div>
+            <label class="file-button">Choose a new cover
+              <input type="file" id="d-cover-file" accept="image/jpeg,image/png" hidden>
+            </label>
+            <button class="ghost small hidden" id="d-cover-remove" type="button">Remove the cover</button>
+          </div>
+          <div class="grid">
+            <label>Title <input id="d-title" dir="auto" required maxlength="300"></label>
+            <label>Author <input id="d-authors" dir="auto" maxlength="300" placeholder="Comma-separated"></label>
+            <p class="muted small">Saved into the audiobook file, so players and the Book Listen app show them.</p>
+          </div>
+        </div>
+        <p id="d-error" class="error hidden" role="alert"></p>
+        <div class="buttons dialog-actions">
+          <button type="button" class="ghost" id="d-cancel">Cancel</button>
+          <button type="submit" class="primary" id="d-submit">Save</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
   <script src="/static/app.js"></script>
 </body>
 </html>

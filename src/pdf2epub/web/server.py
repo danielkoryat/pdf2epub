@@ -37,6 +37,7 @@ from ..model import Kind
 from ..validate import epubcheck_available
 from ..voices import catalog, estimate, measured_speeds, validate_options
 from . import admin as admin_api
+from . import m4b
 from . import voice as voice_api
 from .auth import Auth
 from .db import Database
@@ -438,7 +439,10 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
     def get_cover(job_id: str, user: dict = Depends(reader)) -> Response:
         job = owned(job_id, user)
         upload = library.cover_upload_path(job)
-        if job.kind == "epub":
+        if job.kind == "audio":
+            path = library.m4b_path(job)
+            cover = m4b.cover(path) if job.status == "done" and path.is_file() else None
+        elif job.kind == "epub":
             cover = library.epub_cover(job)
         else:
             cover = upload.read_bytes() if upload.is_file() else draft_of(job).book.cover
@@ -536,6 +540,33 @@ def create_app(data_dir: Path | None = None, settings: Settings | None = None, s
         pending = "speak" if library.script_path(job).is_file() else "prepare"
         db.update_job(job.id, status="queued", pending=pending, worker="", error="", attempts=0, speed=None)
         auth.audit(request, user, "job.retry", target=job.id)
+        return public(library.get(job.id))
+
+    @app.post("/api/jobs/{job_id}/details")
+    async def audiobook_details(job_id: str, request: Request, title: str = Form(...), authors: str = Form(""),
+                                cover: UploadFile | None = File(None), remove_cover: bool = Form(False),
+                                user: dict = Depends(writer)) -> dict:
+        """A finished audiobook's title, author and cover, written into its M4B (sound and chapters untouched)."""
+        job = owned(job_id, user)
+        path = library.m4b_path(job)
+        if job.kind != "audio" or job.status != "done" or not path.is_file():
+            raise HTTPException(409, "The audiobook is not ready")
+        title, authors = " ".join(title.split())[:300], " ".join(authors.split())[:300]
+        if not title:
+            raise HTTPException(400, "The title can't be empty")
+        picture = None if remove_cover else m4b.KEEP
+        if cover is not None and cover.filename:
+            picture = await cover.read(20 * CHUNK + 1)
+            try:
+                check_image(picture)
+            except UploadRejected as exc:
+                raise HTTPException(400, str(exc)) from None
+        try:
+            m4b.retag(path, title, authors, picture)
+        except PermissionError:  # Windows: the file is open, e.g. being downloaded
+            raise HTTPException(409, "The audiobook file is in use; please try again in a moment") from None
+        db.update_job(job.id, title=title, authors=authors, size=library.folder_size(job.id))
+        auth.audit(request, user, "job.details", target=job.id, cover="removed" if picture is None else "new" if picture is not m4b.KEEP else "kept")
         return public(library.get(job.id))
 
     @app.get("/api/jobs/{job_id}/audiobook")

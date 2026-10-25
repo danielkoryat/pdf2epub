@@ -423,6 +423,7 @@ function audioCard(job) {
   const label = job.status === "building" && speaking ? "Reading aloud" : job.status === "queued" && speaking ? "Waiting for voices" : STATUS[job.status] || job.status;
   const status = el("span", { class: `badge ${job.status}` }, label);
   const sub = ["Audiobook", voiceLabel(job)];
+  if (job.authors) sub.splice(1, 0, job.authors);
   if (job.summary) sub.push(`${job.summary.chapters} chapters`, job.report ? fmtLength(job.report.seconds) : `about ${fmtLength(job.summary.audio_seconds)}`);
   if (job.report) sub.push(`${(job.report.size / 1048576).toFixed(0)} MB`);
 
@@ -430,6 +431,7 @@ function audioCard(job) {
   if (job.status === "done") {
     buttons.append(el("a", { class: "button", href: `/api/jobs/${job.id}/audiobook`, onclick: () => track("audiobook_downloaded", { engine: job.options?.engine }) },
       el("button", { class: "primary", type: "button" }, "Download audiobook")));
+    buttons.append(el("button", { type: "button", onclick: () => openDetails(job) }, "Edit details"));
   }
   if (job.status === "failed") {
     // The same job again: the voice worker continues from the chapters it already made.
@@ -552,6 +554,71 @@ $("#ab-form").addEventListener("submit", async e => {
     $("#ab-error").classList.remove("hidden");
   } finally {
     $("#ab-submit").disabled = false;
+  }
+});
+
+/* ---------------------------------------------------------------- audiobook details */
+
+const dDialog = $("#details");
+let dJob = null;
+let dCover = null; // what Save does with the cover: null keeps it, a File replaces it, "remove" takes it out
+let dPreview = "";
+
+function showDetailsCover(src) {
+  if (dPreview) URL.revokeObjectURL(dPreview);
+  dPreview = src?.startsWith("blob:") ? src : "";
+  $("#d-cover").classList.toggle("hidden", !src);
+  $("#d-nocover").classList.toggle("hidden", !!src);
+  $("#d-cover-remove").classList.toggle("hidden", !src);
+  if (src) $("#d-cover").src = src;
+}
+
+function openDetails(job) {
+  dJob = job;
+  dCover = null;
+  $("#d-title").value = job.title || "";
+  $("#d-authors").value = job.authors || "";
+  $("#d-error").classList.add("hidden");
+  $("#d-cover-file").value = "";
+  showDetailsCover(null);
+  const img = new Image(); // the cover in the file, if it has one
+  img.onload = () => { if (dJob === job && dCover === null) showDetailsCover(img.src); };
+  img.src = `/api/jobs/${job.id}/cover?t=${Date.now()}`;
+  dDialog.showModal();
+}
+
+$("#d-cover-file").addEventListener("change", e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  dCover = file;
+  showDetailsCover(URL.createObjectURL(file));
+});
+$("#d-cover-remove").addEventListener("click", () => {
+  dCover = "remove";
+  $("#d-cover-file").value = "";
+  showDetailsCover(null);
+});
+$("#d-close").addEventListener("click", () => dDialog.close());
+$("#d-cancel").addEventListener("click", () => dDialog.close());
+dDialog.addEventListener("close", () => showDetailsCover(null));
+$("#d-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const data = new FormData();
+  data.set("title", $("#d-title").value);
+  data.set("authors", $("#d-authors").value);
+  if (dCover instanceof File) data.set("cover", dCover);
+  if (dCover === "remove") data.set("remove_cover", "true");
+  $("#d-submit").disabled = true;
+  try {
+    await api(`/api/jobs/${dJob.id}/details`, { method: "POST", body: data });
+    track("audiobook_details_changed", { cover: dCover instanceof File ? "new" : dCover || "kept" });
+    dDialog.close();
+    refreshJobs();
+  } catch (err) {
+    $("#d-error").textContent = err.message;
+    $("#d-error").classList.remove("hidden");
+  } finally {
+    $("#d-submit").disabled = false;
   }
 });
 

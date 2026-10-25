@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 # Silences (seconds) that give the reading its rhythm.
+PAUSE_CLAUSE = 0.2  # where a long sentence is cut, at a comma if it has one
 PAUSE_SENTENCE = 0.35
 PAUSE_PARAGRAPH = 0.7
 PAUSE_HEADING = 1.0  # after a chapter title or a heading
@@ -63,19 +64,51 @@ def groups(text: str, max_len: int) -> list[str]:
 
 
 def _split_long(sentence: str, max_len: int) -> list[str]:
+    """Clauses gathered up to max_len, so that a cut falls where a reader pauses anyway; an overlong clause is cut
+    at spaces into about equal parts."""
     if len(sentence) <= max_len:
         return [sentence]
     pieces: list[str] = []
-    current = ""
-    for word in re.split(r"(?<=[,،])\s+|\s+", sentence):
-        if current and len(current) + 1 + len(word) > max_len:
-            pieces.append(current)
-            current = word
-        else:
-            current = f"{current} {word}".strip()
-    if current:
-        pieces.append(current)
+    for clause in re.split(r"(?<=[,،])\s+", sentence):
+        for part in _split_words(clause, max_len):
+            if pieces and len(pieces[-1]) + 1 + len(part) <= max_len:
+                pieces[-1] = f"{pieces[-1]} {part}"
+            else:
+                pieces.append(part)
     return [p[:max_len] for p in pieces]
+
+
+# Hebrew number words: a cut between two of them splits a number (שלוש מאות | וחמישים).
+_NUMBER_WORD = re.compile(
+    r"[ובכלמשה]{0,3}(?:אחד|אחת|שניים|שתיים|שני|שתי|שנים|שתים|שלוש|שלושה|שלושת|ארבע|ארבעה|ארבעת|חמש|חמישה|חמשת|שש|"
+    r"שישה|ששת|שבע|שבעה|שבעת|שמונה|שמונת|תשע|תשעה|תשעת|עשר|עשרה|עשרת|עשרים|שלושים|ארבעים|חמישים|שישים|שבעים|"
+    r"שמונים|תשעים|מאה|מאת|מאות|מאתיים|אלף|אלפי|אלפים|אלפיים|מיליון|מיליוני|מיליארד|טריליון|נקודה|אפס)"
+)
+
+
+def _split_words(clause: str, max_len: int) -> list[str]:
+    if len(clause) <= max_len:
+        return [clause]
+    words = clause.split()
+    limit = min(max_len, -(-len(clause) // -(-len(clause) // max_len)) + 10)  # equal parts, a little slack
+    pieces: list[list[str]] = [[]]
+    for word in words:
+        current = pieces[-1]
+        if current and len(" ".join(current)) + 1 + len(word) > limit:
+            # Not inside a number: go back to the last word that is not part of one, if there is one.
+            cut, following = len(current), current + [word]
+            while (cut > 1 and _is_number_word(following[cut - 1]) and _is_number_word(following[cut])
+                   and len(" ".join(following[cut - 1:])) <= max_len):
+                cut -= 1
+            pieces[-1], rest = current[:cut], current[cut:]
+            pieces.append(rest)
+            current = rest
+        current.append(word)
+    return [" ".join(p) for p in pieces if p]
+
+
+def _is_number_word(word: str) -> bool:
+    return _NUMBER_WORD.fullmatch(word.strip(".,;:!?\"'()")) is not None
 
 
 def expected_seconds(text: str, lang: str, speed: float = 1.0) -> float:

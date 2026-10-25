@@ -129,6 +129,12 @@ def test_reading_a_book(tmp_path: Path, caplog):
     assert list(speeds.totals) == ["blue/smooth"]
     data = b"".join(site.parts[i] for i in sorted(site.parts))
     assert hashlib.sha256(data).hexdigest() == site.finished["sha256"] and data[4:8] == b"ftyp"
+    from pdf2epub_voice.readalong import BOX_ID
+    offset = data.index(BOX_ID) + len(BOX_ID)
+    timed = json.loads(data[offset:])["cues"]
+    assert [c["text"] for c in timed] == [t for t, _ in tone.calls]
+    assert all(c["end"] > c["start"] >= 0 for c in timed)
+    assert all(a["end"] <= b["start"] for a, b in zip(timed, timed[1:]))
     spoken = [t for t, _ in tone.calls]
     assert spoken[0] == "Test Book. By A. Writer." and "One" in spoken and "Chapter 2" not in spoken
     assert ("שלום עולם", "he") in tone.calls
@@ -148,6 +154,34 @@ def test_speeds_are_measured_and_kept(tmp_path: Path):
     assert speeds.ratios() == {}  # too little to go by
     speeds.add("blue/smooth", 90, 240)
     assert Speeds(tmp_path / "speeds.json").ratios() == {"blue/smooth": 0.4}
+
+
+@needs_ffmpeg
+def test_changed_pronunciations_do_not_resume_old_audio(tmp_path: Path, monkeypatch):
+    site = FakeSite()
+    client = Client("https://site.test", "t" * 40, "laptop", transport=httpx.MockTransport(site))
+    tone = Tone()
+    tone.cache_key = "original-pronunciations"
+    reader = Reader(client, Engines(tone), tmp_path)
+    job = client.claim(["blue"], {})
+
+    def failed_upload(*args):
+        raise RuntimeError("upload interrupted")
+
+    monkeypatch.setattr(client, "upload", failed_upload)
+    with pytest.raises(RuntimeError, match="upload interrupted"):
+        reader.read(job)
+    assert tone.calls
+    tone.calls.clear()
+    # An unchanged dictionary resumes the completed chapters without synthesizing.
+    with pytest.raises(RuntimeError, match="upload interrupted"):
+        reader.read(job)
+    assert not tone.calls
+    # A new dictionary must regenerate those chapters, even for the same job.
+    tone.cache_key = "corrected-pronunciations"
+    with pytest.raises(RuntimeError, match="upload interrupted"):
+        reader.read(job)
+    assert tone.calls
 
 
 @needs_ffmpeg
@@ -201,6 +235,14 @@ def test_sentence_groups():
     small = groups(text, 20)
     assert all(len(g) <= 20 for g in small) and " ".join(small) == text  # nothing lost or reordered
     assert all(len(g) <= 30 for g in groups("word " * 50, 30))
+
+
+def test_long_sentences_are_cut_at_commas_and_not_inside_numbers():
+    sentence = "הם יצאו לטיול ארוך מאוד, נסעו הרבה, ושילמו על הכול מאה ושלושים שקלים בכל יום שעבר עליהם בדרך"
+    pieces = groups(sentence, 40)
+    assert " ".join(pieces) == sentence and all(len(p) <= 40 for p in pieces)
+    assert pieces[0] == "הם יצאו לטיול ארוך מאוד, נסעו הרבה,"  # at the commas, where a reader pauses
+    assert not any(p.endswith(("מאה", "ושלושים")) for p in pieces)  # מאה ושלושים stays together
 
 
 @needs_ffmpeg

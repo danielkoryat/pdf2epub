@@ -30,6 +30,7 @@ import soundfile as sf
 
 from .audio import RATE, ChapterAudio, Encoder, build_m4b, normalize, silence
 from .client import Client, Gone
+from .readalong import embed
 from .engines import Engine, Engines
 from .text import PAUSE_BREAK, PAUSE_CHAPTER, PAUSE_HEADING, PAUSE_PARAGRAPH, chapter_name, intro
 
@@ -153,7 +154,8 @@ class Reader:
         job_id, o = job["id"], job["options"]
         script = self.client.script(job_id)
         cover = self.client.cover(job_id) if job.get("has_cover") else None
-        key = hashlib.sha256(json.dumps([o, script], sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
+        engine = self.engines.get(o["engine"])
+        key = hashlib.sha256(json.dumps(["readalong-v1", o, script, getattr(engine, "cache_key", "")], sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
         work = self.cache / f"{job_id}-{key}"
         work.mkdir(parents=True, exist_ok=True)
         self._forget_old(keep=work)
@@ -162,7 +164,6 @@ class Reader:
         lang = script["language"]
         total = sum(len(ch["title"]) + sum(len(p["text"]) for p in ch["paragraphs"]) for ch in chapters)
         progress = _Progress(self.client, job_id, total, self.stall_seconds)
-        engine = self.engines.get(o["engine"])
         progress.say(f"Reading {len(chapters)} chapters with {o['engine']} / {o['voice']}" + (f" (attempt {job['attempts']})" if job.get("attempts", 1) > 1 else ""))
         progress.touch()  # loading the engine (a download, the first time) is not reading
         progress.start()
@@ -170,25 +171,35 @@ class Reader:
         encoder = Encoder(work / "book.aac")  # every chapter, as soon as it is there (those read before too)
         try:
             done: list[ChapterAudio] = []
+            book_cues = []
+            offset_ms = 0.0
             for n, chapter in enumerate(chapters):
                 title = chapter_name(chapter["title"], n + 1, lang)
                 path = work / f"{n:04d}.flac"
                 size = len(chapter["title"]) + sum(len(p["text"]) for p in chapter["paragraphs"])
-                if path.is_file():  # read before this job was interrupted
+                cue_path = path.with_suffix(".json")
+                cues = []
+                if path.is_file() and cue_path.is_file():  # audio and timing must both survive restart
                     seconds = sf.info(str(path)).duration
+                    cues = json.loads(cue_path.read_text(encoding="utf-8"))
                     progress.done += size
                 else:
                     progress.done = sum(len(c["title"]) + sum(len(p["text"]) for p in c["paragraphs"]) for c in chapters[:n])
                     began = time.monotonic()
-                    audio = self._chapter(engine, o, lang, chapter, script if n == 0 else None, progress)
+                    audio = self._chapter(engine, o, lang, chapter, script if n == 0 else None, progress, cues)
                     if self.speeds is not None:
                         self.speeds.add(f"{o['engine']}/{o['quality']}", len(audio) / RATE, time.monotonic() - began)
                     tmp = path.with_suffix(".tmp.flac")
                     sf.write(str(tmp), audio, RATE, subtype="PCM_16")
                     tmp.replace(path)
+                    cue_tmp = cue_path.with_suffix(".json.tmp")
+                    cue_tmp.write_text(json.dumps(cues, ensure_ascii=False), encoding="utf-8")
+                    cue_tmp.replace(cue_path)
                     seconds = len(audio) / RATE
                     elapsed = time.monotonic() - started
                     progress.say(f"Chapter {n + 1} of {len(chapters)}: {title} ({seconds / 60:.0f} min of audio, {elapsed / 60:.0f} min so far)")
+                book_cues.extend({"start": round(c["start"] + offset_ms), "end": round(c["end"] + offset_ms), "text": c["text"]} for c in cues)
+                offset_ms += seconds * 1000
                 done.append(ChapterAudio(title, path, seconds))
                 encoder.add(path)
             progress.reading = False
@@ -199,6 +210,7 @@ class Reader:
             if encoded is None:
                 log.warning("The audio encoded while reading is incomplete (%s); encoding the book now", encoder.error)
             build_m4b(done, script["title"], script["authors"], lang, cover, out, encoded)
+            embed(out, book_cues)
             progress.say(f"Uploading {out.stat().st_size / 1048576:.0f} MB ({length / 3600:.1f} hours of audio)")
             progress.stopped.set()
             progress.send()
@@ -213,7 +225,7 @@ class Reader:
             encoder.stop()
             progress.stopped.set()
 
-    def _chapter(self, engine: Engine, o: dict, lang: str, chapter: dict, opening: dict | None, progress: _Progress) -> np.ndarray:
+    def _chapter(self, engine: Engine, o: dict, lang: str, chapter: dict, opening: dict | None, progress: _Progress, cues: list | None = None) -> np.ndarray:
         def speak(text: str, text_lang: str) -> np.ndarray:
             if progress.cancelled.is_set():
                 raise Cancelled
@@ -221,6 +233,9 @@ class Reader:
             audio = engine.synthesize(text, text_lang, o["voice"], o["speed"], o["quality"])
             progress.touch()
             progress.made(len(audio) / RATE)
+            if cues is not None:
+                start = sum(len(part) for part in parts) / RATE * 1000
+                cues.append({"start": start, "end": start + len(audio) / RATE * 1000, "text": text})
             return audio
 
         parts: list[np.ndarray] = []
